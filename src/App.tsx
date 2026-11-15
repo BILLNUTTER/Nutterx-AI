@@ -62,10 +62,7 @@ function ChatApp() {
     };
   }, []);
 
-  // Do not automatically open the sign-in modal for visitors.
-  // Visitors should see the public landing page first.
-
-  // Load the user's chats.
+  // Load conversation history without automatically opening a recent chat.
   useEffect(() => {
     if (!user) {
       setChats([]);
@@ -77,6 +74,10 @@ function ChatApp() {
 
     let cancelled = false;
 
+    setActiveChatId(null);
+    setMessages([]);
+    setChats([]);
+
     (async () => {
       try {
         const userChats = await api.listChats();
@@ -84,19 +85,6 @@ function ChatApp() {
         if (cancelled) return;
 
         setChats(userChats);
-
-        if (userChats.length > 0) {
-          setActiveChatId((currentId) => {
-            if (
-              currentId &&
-              userChats.some((chat) => chat.id === currentId)
-            ) {
-              return currentId;
-            }
-
-            return userChats[0].id;
-          });
-        }
       } catch (error) {
         if (!cancelled) {
           console.error('Could not load chats:', error);
@@ -109,7 +97,7 @@ function ChatApp() {
     };
   }, [user]);
 
-  // Load messages for the selected chat.
+  // Load messages only when the user selects an existing chat.
   useEffect(() => {
     if (!activeChatId || !user) {
       setMessages([]);
@@ -145,7 +133,7 @@ function ChatApp() {
     };
   }, [activeChatId, user]);
 
-  // Scroll only the conversation container.
+  // Scroll the conversation container as messages arrive.
   useEffect(() => {
     const container = messagesContainerRef.current;
 
@@ -153,22 +141,24 @@ function ChatApp() {
 
     container.scrollTo({
       top: container.scrollHeight,
-      behavior: 'smooth',
+      behavior: typing ? 'auto' : 'smooth',
     });
   }, [messages, typing]);
 
+  // Start a new empty conversation.
   const handleNewChat = useCallback(() => {
     setActiveChatId(null);
     setMessages([]);
     setSidebarOpen(false);
   }, []);
 
+  // Open an existing conversation.
   const handleSelectChat = useCallback((chatId: string) => {
     setActiveChatId(chatId);
     setSidebarOpen(false);
   }, []);
 
-  // Delete a chat and report any errors instead of silently ignoring them.
+  // Delete a chat and its messages.
   const handleDeleteChat = useCallback(async (chatId: string) => {
     if (deletingChatIds.includes(chatId)) return;
 
@@ -206,6 +196,7 @@ function ChatApp() {
     }
   }, [activeChatId, chats, deletingChatIds]);
 
+  // Send a message and stream the AI response.
   const handleSend = useCallback(async (text: string) => {
     if (!user) {
       setAuthOpen(true);
@@ -214,7 +205,7 @@ function ChatApp() {
 
     let currentChatId = activeChatId;
 
-    // Create a new chat if necessary.
+    // Create a database chat only when the first message is sent.
     if (!currentChatId) {
       const title = text.length > 40
         ? text.slice(0, 40) + '...'
@@ -252,25 +243,63 @@ function ChatApp() {
 
     setTyping(true);
 
+    // Add an empty assistant message immediately.
+    const assistantMessageId = `ai-${Date.now()}`;
+
+    const initialAssistantMessage: Message = {
+      id: assistantMessageId,
+      chat_id: currentChatId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, initialAssistantMessage]);
+
+    let streamedReply = '';
+
     try {
       const allMessages = [...messages, userMessage];
 
-      const { reply, error } = await getAIResponse(allMessages);
+      const { reply, error } = await getAIResponse(
+        allMessages,
+        (chunk) => {
+          streamedReply += chunk;
+
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: streamedReply,
+                  }
+                : message
+            )
+          );
+        }
+      );
 
       if (error || !reply) {
-        const errorMsg: Message = {
-          id: 'error-' + Date.now(),
-          chat_id: currentChatId,
-          role: 'assistant',
-          content: `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`,
-          created_at: new Date().toISOString(),
-        };
+        const errorContent =
+          streamedReply.trim()
+            ? `${streamedReply}\n\n[Response interrupted: ${error ?? 'Please try again.'}]`
+            : `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`;
 
-        setMessages((prev) => [...prev, errorMsg]);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: errorContent,
+                }
+              : message
+          )
+        );
+
         return;
       }
 
-      // Save the assistant's response.
+      // Save the completed assistant response.
       try {
         const aiMsg = await api.createMessage(
           currentChatId,
@@ -278,21 +307,44 @@ function ChatApp() {
           reply
         );
 
-        setMessages((prev) => [...prev, aiMsg]);
+        // Replace the temporary streaming message with the saved message.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? aiMsg
+              : message
+          )
+        );
       } catch (error) {
         console.error('Could not save AI response:', error);
 
-        // Display the reply even if saving it fails.
-        const fallbackMsg: Message = {
-          id: 'ai-' + Date.now(),
-          chat_id: currentChatId,
-          role: 'assistant',
-          content: reply,
-          created_at: new Date().toISOString(),
-        };
-
-        setMessages((prev) => [...prev, fallbackMsg]);
+        // Keep the streamed reply visible if saving fails.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: reply,
+                }
+              : message
+          )
+        );
       }
+    } catch (error) {
+      console.error('AI response failed:', error);
+
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                content: streamedReply.trim()
+                  ? `${streamedReply}\n\n[Response interrupted. Please try again.]`
+                  : 'Sorry, something went wrong while generating your response. Please try again.',
+              }
+            : message
+        )
+      );
     } finally {
       setTyping(false);
     }
@@ -466,21 +518,12 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
   return (
     <div className="min-h-full flex flex-col items-center justify-center px-4 py-12">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center mb-6 glow-purple">
-        <svg
-          width="32"
-          height="32"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="white"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect width="18" height="10" x="3" y="11" rx="2" />
-          <circle cx="12" cy="16" r="1" fill="white" />
-          <path d="M12 13V7a4 4 0 0 0-4-4 4 4 0 0 0-4 4v1" />
-          <path d="M12 13V7a4 4 0 0 1 4-4 4 4 0 0 1 4 4v1" />
-        </svg>
+        <img
+          src="/nutterx-brand-logo.png"
+          alt="NUTTERX-AI"
+          draggable={false}
+          className="w-12 h-12 object-contain"
+        />
       </div>
 
       <h2 className="font-display text-2xl md:text-3xl font-bold mb-2">

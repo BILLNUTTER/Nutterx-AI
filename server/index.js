@@ -590,12 +590,18 @@ IDENTITY:
 
 Your name is NUTTERX-AI. You are a capable general-purpose AI assistant. Be respectful, approachable, accurate, and solution-oriented.`;
 
-// Generate AI response
+// Send one SSE message to the frontend
+function sendStreamEvent(res, data) {
+  if (!res.writableEnded && !res.destroyed) {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+}
+
+// Generate streamed AI response
 app.post(
   "/api/ai-chat",
   asyncRoute(async (req, res) => {
     const body = req.body || {};
-
     const incomingMessages = body.messages;
 
     if (!Array.isArray(incomingMessages)) {
@@ -624,39 +630,57 @@ app.post(
       });
     }
 
-    const response = await fetch(POLLINATIONS_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: POLLINATIONS_MODEL,
-        messages: [
-          {
-            role: "system",
-            content: AI_SYSTEM_PROMPT,
-          },
-          ...validMessages,
-        ],
-        temperature: 0.7,
-        max_tokens: 1000,
-      }),
+    const controller = new AbortController();
+
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        controller.abort();
+      }
     });
 
-    const raw = await response.text();
-
-    let result;
+    let response;
 
     try {
-      result = JSON.parse(raw);
-    } catch {
-      result = raw;
+      response = await fetch(POLLINATIONS_API_URL, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          model: POLLINATIONS_MODEL,
+          messages: [
+            {
+              role: "system",
+              content: AI_SYSTEM_PROMPT,
+            },
+            ...validMessages,
+          ],
+          temperature: 0.7,
+          max_tokens: 1000,
+          stream: true,
+        }),
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      console.error("Pollinations connection error:", error);
+
+      return res.status(502).json({
+        error: "Could not connect to the AI provider",
+      });
     }
 
     if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+
       console.error(
         "Pollinations request failed:",
-        response.status
+        response.status,
+        errorText.slice(0, 500)
       );
 
       return res.status(502).json({
@@ -664,22 +688,187 @@ app.post(
       });
     }
 
-    const reply =
-      typeof result === "string"
-        ? result
-        : result?.choices?.[0]?.message?.content ??
-          result?.reply ??
-          "";
-
-    if (typeof reply !== "string" || !reply.trim()) {
+    if (!response.body) {
       return res.status(502).json({
-        error: "No response received from AI",
+        error: "The AI provider returned an empty response",
       });
     }
 
-    res.json({
-      reply: reply.trim(),
-    });
+    // Prepare Server-Sent Events response
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    res.flushHeaders?.();
+
+    const contentType = response.headers.get("content-type") || "";
+
+    let fullReply = "";
+
+    try {
+      // Handle a normal JSON response if the provider does not stream.
+      if (!contentType.includes("text/event-stream")) {
+        const raw = await new Response(response.body).text();
+
+        let result;
+
+        try {
+          result = JSON.parse(raw);
+        } catch {
+          result = raw;
+        }
+
+        const reply =
+          typeof result === "string"
+            ? result
+            : result?.choices?.[0]?.message?.content ??
+              result?.reply ??
+              "";
+
+        if (typeof reply !== "string" || !reply.trim()) {
+          sendStreamEvent(res, {
+            error: "No response received from AI",
+          });
+          return res.end();
+        }
+
+        fullReply = reply.trim();
+
+        // Send the response in small pieces for a consistent client interface.
+        const chunkSize = 24;
+
+        for (let i = 0; i < fullReply.length; i += chunkSize) {
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          sendStreamEvent(res, {
+            delta: fullReply.slice(i, i + chunkSize),
+          });
+        }
+
+        sendStreamEvent(res, { done: true });
+        return res.end();
+      }
+
+      // Read the provider's actual streaming response.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      let streamFinished = false;
+
+      function processSSELine(line) {
+        const trimmedLine = line.trim();
+
+        if (!trimmedLine.startsWith("data:")) {
+          return;
+        }
+
+        const data = trimmedLine.slice(5).trim();
+
+        if (!data || data === "[DONE]") {
+          if (data === "[DONE]") {
+            streamFinished = true;
+          }
+          return;
+        }
+
+        let parsed;
+
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          return;
+        }
+
+        const delta = parsed?.choices?.[0]?.delta?.content;
+
+        if (typeof delta === "string" && delta.length > 0) {
+          fullReply += delta;
+
+          sendStreamEvent(res, {
+            delta,
+          });
+        }
+
+        const messageContent =
+          parsed?.choices?.[0]?.message?.content;
+
+        if (
+          typeof messageContent === "string" &&
+          messageContent.length > 0 &&
+          !fullReply
+        ) {
+          fullReply += messageContent;
+
+          sendStreamEvent(res, {
+            delta: messageContent,
+          });
+        }
+      }
+
+      while (!streamFinished) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const { value, done } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          processSSELine(line);
+
+          if (streamFinished) {
+            break;
+          }
+        }
+      }
+
+      // Process any remaining buffered data.
+      if (buffer.trim() && !controller.signal.aborted) {
+        processSSELine(buffer);
+      }
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      if (!fullReply.trim()) {
+        sendStreamEvent(res, {
+          error: "No response received from AI",
+        });
+        return res.end();
+      }
+
+      sendStreamEvent(res, {
+        done: true,
+      });
+
+      res.end();
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      console.error("AI streaming error:", error);
+
+      sendStreamEvent(res, {
+        error: "An error occurred while receiving the AI response",
+      });
+
+      res.end();
+    }
   })
 );
 
