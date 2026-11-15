@@ -29,10 +29,6 @@ interface MemoryKnowledgePanelProps {
 
 type Tab = 'memory' | 'knowledge' | 'moderation';
 
-type ApprovedKnowledge = Awaited<
-  ReturnType<typeof api.listApprovedKnowledge>
->[number];
-
 export default function MemoryKnowledgePanel({
   open,
   onClose,
@@ -41,9 +37,6 @@ export default function MemoryKnowledgePanel({
 
   const [memories, setMemories] = useState<PersonalMemory[]>([]);
   const [myKnowledge, setMyKnowledge] = useState<SharedKnowledge[]>([]);
-  const [approvedKnowledge, setApprovedKnowledge] = useState<
-    ApprovedKnowledge[]
-  >([]);
   const [pendingKnowledge, setPendingKnowledge] = useState<
     SharedKnowledge[]
   >([]);
@@ -64,31 +57,41 @@ export default function MemoryKnowledgePanel({
   const [knowledgeContent, setKnowledgeContent] = useState('');
   const [confirmPublic, setConfirmPublic] = useState(false);
 
+  const clearMessages = () => {
+    setError('');
+    setNotice('');
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError('');
 
     try {
-      const [memoryResult, myKnowledgeResult, approvedResult] =
-        await Promise.all([
-          api.listMemories(),
-          api.listMyKnowledge(),
-          api.listApprovedKnowledge(),
-        ]);
+      // Ordinary users only load their personal memories and
+      // their own Shared Knowledge contributions.
+      const [memoryResult, myKnowledgeResult] = await Promise.all([
+        api.listMemories(),
+        api.listMyKnowledge(),
+      ]);
 
       setMemories(memoryResult);
       setMyKnowledge(myKnowledgeResult);
-      setApprovedKnowledge(approvedResult);
 
-      // Ordinary users will receive a permission error here.
-      // Only users with moderator permissions can see this tab.
+      // Only moderators can access the pending moderation endpoint.
+      // A permission error here is expected for ordinary users.
       try {
         const pendingResult = await api.listPendingKnowledge();
+
         setPendingKnowledge(pendingResult);
         setModerator(true);
       } catch {
         setPendingKnowledge([]);
         setModerator(false);
+
+        // Do not leave an ordinary user on a restricted tab.
+        setActiveTab((current) =>
+          current === 'moderation' ? 'knowledge' : current
+        );
       }
     } catch (err) {
       setError(
@@ -122,11 +125,6 @@ export default function MemoryKnowledgePanel({
       window.removeEventListener('keydown', handleEscape);
     };
   }, [open, onClose]);
-
-  const clearMessages = () => {
-    setError('');
-    setNotice('');
-  };
 
   const handleSaveMemory = async () => {
     const content = memoryContent.trim();
@@ -244,7 +242,9 @@ export default function MemoryKnowledgePanel({
     }
 
     if (!confirmPublic) {
-      setError('Please confirm that this contribution can be shared publicly.');
+      setError(
+        'Please confirm that this contribution can be shared publicly.'
+      );
       return;
     }
 
@@ -258,13 +258,16 @@ export default function MemoryKnowledgePanel({
         confirmPublic: true,
       });
 
+      // Add the new submission to this user's own contributions.
+      // Other users' submissions are never displayed here.
       setMyKnowledge((previous) => [created, ...previous]);
+
       setKnowledgeTitle('');
       setKnowledgeContent('');
       setConfirmPublic(false);
 
       setNotice(
-        'Contribution submitted. It will be available to everyone after moderation.'
+        'Contribution submitted successfully. You can track its review status here.'
       );
     } catch (err) {
       setError(
@@ -315,7 +318,13 @@ export default function MemoryKnowledgePanel({
     { id: 'memory', label: 'Personal Memory', icon: Brain },
     { id: 'knowledge', label: 'Shared Knowledge', icon: BookOpen },
     ...(moderator
-      ? [{ id: 'moderation' as Tab, label: 'Moderation', icon: ShieldCheck }]
+      ? [
+          {
+            id: 'moderation' as Tab,
+            label: 'Moderation',
+            icon: ShieldCheck,
+          },
+        ]
       : []),
   ];
 
@@ -398,11 +407,13 @@ export default function MemoryKnowledgePanel({
               >
                 <Icon size={16} />
                 {tab.label}
-                {tab.id === 'moderation' && pendingKnowledge.length > 0 && (
-                  <span className="rounded-full bg-amber-500/15 text-amber-300 px-2 py-0.5 text-[10px]">
-                    {pendingKnowledge.length}
-                  </span>
-                )}
+
+                {tab.id === 'moderation' &&
+                  pendingKnowledge.length > 0 && (
+                    <span className="rounded-full bg-amber-500/15 text-amber-300 px-2 py-0.5 text-[10px]">
+                      {pendingKnowledge.length}
+                    </span>
+                  )}
               </button>
             );
           })}
@@ -545,6 +556,7 @@ export default function MemoryKnowledgePanel({
                               <span className="inline-block mb-2 rounded-full bg-primary-500/10 border border-primary-500/20 px-2 py-1 text-[10px] text-primary-300">
                                 {memory.category}
                               </span>
+
                               <p className="text-sm text-white/80 whitespace-pre-wrap break-words">
                                 {memory.content}
                               </p>
@@ -559,6 +571,7 @@ export default function MemoryKnowledgePanel({
                               >
                                 <Pencil size={15} />
                               </button>
+
                               <button
                                 type="button"
                                 onClick={() =>
@@ -597,9 +610,22 @@ export default function MemoryKnowledgePanel({
                       Shared Knowledge
                     </h3>
                     <p className="text-xs text-white/45 leading-relaxed">
-                      Contribute useful information that could help other
-                      NUTTERX-AI users. Contributions are reviewed before
-                      becoming public.
+                      Contribute useful information to help NUTTERX-AI
+                      improve. Your submissions are reviewed before they
+                      can be used as shared knowledge. Only you can see
+                      your contributions in this panel.
+                    </p>
+                  </div>
+
+                  <div className="flex items-start gap-2 rounded-lg border border-primary-500/15 bg-primary-500/5 p-3">
+                    <Lock
+                      size={15}
+                      className="text-primary-300 shrink-0 mt-0.5"
+                    />
+                    <p className="text-[11px] text-white/55 leading-relaxed">
+                      Your submitted suggestions are private to your account.
+                      Approval allows NUTTERX-AI to learn from the contribution;
+                      it does not make the submission visible to other users.
                     </p>
                   </div>
 
@@ -645,9 +671,9 @@ export default function MemoryKnowledgePanel({
                         className="mt-0.5 accent-primary-500"
                       />
                       <span>
-                        I understand this contribution may become publicly
-                        available to other NUTTERX-AI users if approved. I have
-                        not included private information or secrets.
+                        I understand this contribution may be used by
+                        NUTTERX-AI after approval. I have not included private
+                        information, passwords, API keys, or other secrets.
                       </span>
                     </label>
 
@@ -668,9 +694,14 @@ export default function MemoryKnowledgePanel({
                   </div>
 
                   <div className="space-y-3">
-                    <h3 className="text-sm font-semibold text-white">
-                      Your contributions
-                    </h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-white">
+                        Your contributions
+                      </h3>
+                      <span className="text-xs text-white/40">
+                        {myKnowledge.length} submitted
+                      </span>
+                    </div>
 
                     {myKnowledge.length === 0 ? (
                       <p className="text-xs text-white/40 rounded-xl border border-dashed border-white/10 p-6 text-center">
@@ -688,35 +719,16 @@ export default function MemoryKnowledgePanel({
                             </h4>
                             <StatusBadge status={item.status} />
                           </div>
+
                           <p className="text-xs text-white/50 whitespace-pre-wrap break-words">
                             {item.content}
                           </p>
-                        </article>
-                      ))
-                    )}
-                  </div>
 
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold text-white">
-                      Approved community knowledge
-                    </h3>
-
-                    {approvedKnowledge.length === 0 ? (
-                      <p className="text-xs text-white/40 rounded-xl border border-dashed border-white/10 p-6 text-center">
-                        No approved community contributions yet.
-                      </p>
-                    ) : (
-                      approvedKnowledge.map((item) => (
-                        <article
-                          key={item.id}
-                          className="rounded-xl border border-white/10 p-4"
-                        >
-                          <h4 className="text-sm font-medium text-white mb-2">
-                            {item.title}
-                          </h4>
-                          <p className="text-xs text-white/50 whitespace-pre-wrap break-words">
-                            {item.content}
-                          </p>
+                          <div className="flex items-center gap-1 mt-3 text-[10px] text-white/30">
+                            <Clock size={11} />
+                            Submitted{' '}
+                            {new Date(item.createdAt).toLocaleString()}
+                          </div>
                         </article>
                       ))
                     )}
@@ -731,8 +743,9 @@ export default function MemoryKnowledgePanel({
                       Community moderation
                     </h3>
                     <p className="text-xs text-white/45">
-                      Review contributions before they become available to
-                      everyone.
+                      Review pending contributions. Approved knowledge can
+                      be used by NUTTERX-AI without exposing submissions
+                      to ordinary users.
                     </p>
                   </div>
 
@@ -757,12 +770,14 @@ export default function MemoryKnowledgePanel({
                             <h4 className="text-sm font-semibold text-white">
                               {item.title}
                             </h4>
+
                             <div className="flex items-center gap-1 mt-1 text-[10px] text-white/35">
                               <Clock size={11} />
                               Submitted{' '}
                               {new Date(item.createdAt).toLocaleString()}
                             </div>
                           </div>
+
                           <StatusBadge status={item.status} />
                         </div>
 
@@ -808,6 +823,7 @@ export default function MemoryKnowledgePanel({
           <p className="text-[10px] text-white/30">
             NUTTERX-AI Memory System
           </p>
+
           <button
             type="button"
             onClick={onClose}

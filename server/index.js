@@ -2,6 +2,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import nodemailer from "nodemailer";
 import { MongoClient } from "mongodb";
 import bcrypt from "bcryptjs";
 import {
@@ -24,6 +25,8 @@ const {
   POLLINATIONS_API_URL = "https://text.pollinations.ai/openai",
   POLLINATIONS_MODEL = "openai",
   SHARED_KNOWLEDGE_MODERATOR_EMAILS = "",
+  EMAIL_USER = "",
+  EMAIL_APP_PASSWORD = "",
 } = process.env;
 
 if (!MONGODB_URI) {
@@ -36,6 +39,141 @@ const moderatorEmails = new Set(
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean)
 );
+
+// ---------------- EMAIL CONFIGURATION ----------------
+
+const emailConfigured = Boolean(
+  EMAIL_USER.trim() && EMAIL_APP_PASSWORD.trim()
+);
+
+const emailTransporter = emailConfigured
+  ? nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: {
+        user: EMAIL_USER.trim(),
+        pass: EMAIL_APP_PASSWORD.replace(/\s/g, ""),
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 20000,
+    })
+  : null;
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
+
+async function sendKnowledgeNotification(item, submitterEmail) {
+  if (!emailTransporter) {
+    console.warn(
+      "Knowledge notification skipped: EMAIL_USER or EMAIL_APP_PASSWORD is not configured."
+    );
+    return false;
+  }
+
+  const recipients = [...moderatorEmails];
+
+  if (recipients.length === 0) {
+    recipients.push(EMAIL_USER.trim().toLowerCase());
+  }
+
+  const safeTitle = escapeHtml(item.title);
+  const safeContent = escapeHtml(item.content).replace(/\n/g, "<br>");
+  const safeSubmitter = escapeHtml(submitterEmail);
+  const submittedAt = item.createdAt.toISOString();
+
+  try {
+    await emailTransporter.sendMail({
+      from: {
+        name: "NUTTERX-AI",
+        address: EMAIL_USER.trim(),
+      },
+      to: recipients.join(", "),
+      subject: `New Shared Knowledge submission: ${item.title}`,
+      text: [
+        "A new Shared Knowledge contribution has been submitted.",
+        "",
+        `Title: ${item.title}`,
+        `Submitted by: ${submitterEmail}`,
+        `Submitted at: ${submittedAt}`,
+        "",
+        "Contribution:",
+        item.content,
+        "",
+        "Status: Pending moderator review.",
+      ].join("\n"),
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>New NUTTERX-AI Knowledge Submission</title>
+          </head>
+          <body style="margin:0;padding:24px;background:#f4f4f5;font-family:Arial,sans-serif;color:#18181b;">
+            <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;padding:28px;">
+              <h2 style="margin-top:0;color:#18181b;">NUTTERX-AI</h2>
+
+              <div style="padding:12px 16px;background:#fff7ed;border-radius:8px;color:#9a3412;margin-bottom:22px;">
+                <strong>New contribution awaiting moderation</strong>
+              </div>
+
+              <h3 style="margin-bottom:8px;">${safeTitle}</h3>
+
+              <p style="color:#52525b;font-size:14px;">
+                <strong>Submitted by:</strong> ${safeSubmitter}
+              </p>
+
+              <p style="color:#52525b;font-size:14px;">
+                <strong>Submitted:</strong> ${escapeHtml(submittedAt)}
+              </p>
+
+              <hr style="border:none;border-top:1px solid #e4e4e7;margin:22px 0;">
+
+              <h4>Contribution content</h4>
+
+              <div style="padding:16px;background:#f4f4f5;border-radius:8px;line-height:1.7;overflow-wrap:anywhere;">
+                ${safeContent}
+              </div>
+
+              <p style="margin-top:24px;color:#71717a;font-size:13px;">
+                This contribution is pending review. Sign in to your
+                NUTTERX-AI moderator account to review it.
+              </p>
+
+              <hr style="border:none;border-top:1px solid #e4e4e7;margin:22px 0;">
+
+              <p style="font-size:12px;color:#a1a1aa;">
+                Automated notification from NUTTERX-AI.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+
+    console.log(
+      `Knowledge notification sent to ${recipients.length} moderator(s).`
+    );
+
+    return true;
+  } catch (error) {
+    console.error("Knowledge notification email failed:", error);
+    return false;
+  }
+}
 
 // ---------------- APP SETUP ----------------
 
@@ -283,16 +421,12 @@ function cleanText(value, maxLength) {
   return cleaned;
 }
 
-// Supports MongoDB driver versions that return either
-// the updated document directly or a result containing .value.
 function updatedDocument(result) {
   if (!result) {
     return null;
   }
 
-  if (
-    Object.prototype.hasOwnProperty.call(result, "value")
-  ) {
+  if (Object.prototype.hasOwnProperty.call(result, "value")) {
     return result.value;
   }
 
@@ -309,6 +443,7 @@ function memoryResponse(memory) {
   };
 }
 
+// Contributor-safe response: never exposes another user's details.
 function knowledgeResponse(item) {
   return {
     id: item._id,
@@ -318,6 +453,18 @@ function knowledgeResponse(item) {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     approvedAt: item.approvedAt || null,
+    rejectedAt: item.rejectedAt || null,
+  };
+}
+
+// Moderator response includes the contributor's email.
+function moderatorKnowledgeResponse(item) {
+  return {
+    ...knowledgeResponse(item),
+    userId: item.userId,
+    submittedBy: item.userEmail || "Unknown contributor",
+    approvedBy: item.approvedBy || null,
+    rejectedBy: item.rejectedBy || null,
   };
 }
 
@@ -333,6 +480,7 @@ app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     application: "NUTTERX-AI",
+    emailConfigured,
   });
 });
 
@@ -810,19 +958,22 @@ app.post(
 
     if (!title || !content) {
       return res.status(400).json({
-        error: "A title and knowledge content are required. Titles must be 120 characters or fewer and content 3,000 characters or fewer.",
+        error:
+          "A title and knowledge content are required. Titles must be 120 characters or fewer and content 3,000 characters or fewer.",
       });
     }
 
     if (body.confirmPublic !== true) {
       return res.status(400).json({
-        error: "You must confirm that this contribution can be shared publicly",
+        error:
+          "You must confirm that this contribution can be shared publicly",
       });
     }
 
     const item = {
       _id: randomUUID(),
       userId: req.userSession.userId,
+      userEmail: req.userSession.email,
       title,
       content,
       status: "pending",
@@ -836,6 +987,10 @@ app.post(
 
     await sharedKnowledge().insertOne(item);
 
+    // Notify moderators after the contribution is safely stored.
+    // A mail failure will not undo the database submission.
+    await sendKnowledgeNotification(item, req.userSession.email);
+
     res.status(201).json({
       knowledge: knowledgeResponse(item),
       message: "Your contribution has been submitted for review",
@@ -843,7 +998,8 @@ app.post(
   })
 );
 
-// List the signed-in user's contributions
+// List the signed-in user's contributions.
+// This is the regular user's Shared Knowledge view.
 app.get(
   "/api/knowledge/mine",
   requireAuth,
@@ -862,30 +1018,48 @@ app.get(
   })
 );
 
-// List approved shared knowledge
+// Backwards-compatible private endpoint.
+// A signed-in user receives ONLY their own submissions.
+// It never returns other users' approved contributions.
 app.get(
   "/api/knowledge",
+  requireAuth,
   asyncRoute(async (req, res) => {
-    const items = await sharedKnowledge()
+    const contributions = await sharedKnowledge()
       .find({
-        status: "approved",
+        userId: req.userSession.userId,
       })
-      .sort({ approvedAt: -1 })
+      .sort({ createdAt: -1 })
       .limit(100)
       .toArray();
 
     res.json({
-      knowledge: items.map((item) => ({
-        id: item._id,
-        title: item.title,
-        content: item.content,
-        approvedAt: item.approvedAt || null,
-      })),
+      knowledge: contributions.map(knowledgeResponse),
+      contributions: contributions.map(knowledgeResponse),
     });
   })
 );
 
-// List pending contributions (moderators only)
+// List ALL contributions (moderators only).
+// Includes pending, approved, and rejected submissions.
+app.get(
+  "/api/knowledge/all",
+  requireAuth,
+  requireModerator,
+  asyncRoute(async (req, res) => {
+    const items = await sharedKnowledge()
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .toArray();
+
+    res.json({
+      contributions: items.map(moderatorKnowledgeResponse),
+    });
+  })
+);
+
+// List pending contributions (moderators only).
 app.get(
   "/api/knowledge/pending",
   requireAuth,
@@ -900,17 +1074,19 @@ app.get(
       .toArray();
 
     res.json({
-      contributions: pendingItems.map(knowledgeResponse),
+      contributions: pendingItems.map(moderatorKnowledgeResponse),
     });
   })
 );
 
-// Approve shared knowledge (moderators only)
+// Approve shared knowledge (moderators only).
 app.patch(
   "/api/knowledge/:id/approve",
   requireAuth,
   requireModerator,
   asyncRoute(async (req, res) => {
+    const now = new Date();
+
     const result = await sharedKnowledge().findOneAndUpdate(
       {
         _id: req.params.id,
@@ -919,9 +1095,11 @@ app.patch(
       {
         $set: {
           status: "approved",
-          approvedAt: new Date(),
+          approvedAt: now,
           approvedBy: req.userSession.email,
-          updatedAt: new Date(),
+          rejectedAt: null,
+          rejectedBy: null,
+          updatedAt: now,
         },
       },
       {
@@ -938,18 +1116,20 @@ app.patch(
     }
 
     res.json({
-      knowledge: knowledgeResponse(item),
+      knowledge: moderatorKnowledgeResponse(item),
       message: "Knowledge approved",
     });
   })
 );
 
-// Reject shared knowledge (moderators only)
+// Reject shared knowledge (moderators only).
 app.patch(
   "/api/knowledge/:id/reject",
   requireAuth,
   requireModerator,
   asyncRoute(async (req, res) => {
+    const now = new Date();
+
     const result = await sharedKnowledge().findOneAndUpdate(
       {
         _id: req.params.id,
@@ -958,9 +1138,11 @@ app.patch(
       {
         $set: {
           status: "rejected",
-          rejectedAt: new Date(),
+          rejectedAt: now,
           rejectedBy: req.userSession.email,
-          updatedAt: new Date(),
+          approvedAt: null,
+          approvedBy: null,
+          updatedAt: now,
         },
       },
       {
@@ -977,15 +1159,15 @@ app.patch(
     }
 
     res.json({
-      knowledge: knowledgeResponse(item),
+      knowledge: moderatorKnowledgeResponse(item),
       message: "Contribution rejected",
     });
   })
 );
 
-// Delete shared knowledge
+// Delete shared knowledge.
 // Moderators can delete any contribution.
-// Contributors can delete their own pending contributions.
+// Contributors can delete only their own pending contributions.
 app.delete(
   "/api/knowledge/:id",
   requireAuth,
@@ -1057,6 +1239,7 @@ async function getAIKnowledge(userId, latestMessage) {
     shared: [],
   };
 
+  // Personal memories are restricted to the current signed-in user.
   if (userId) {
     context.memories = await userMemories()
       .find({ userId })
@@ -1065,6 +1248,8 @@ async function getAIKnowledge(userId, latestMessage) {
       .toArray();
   }
 
+  // Only approved shared knowledge is available to the AI.
+  // This is internal database retrieval, not a public user listing.
   const approvedItems = await sharedKnowledge()
     .find({ status: "approved" })
     .sort({ approvedAt: -1 })
@@ -1148,14 +1333,14 @@ IDENTITY:
 
 Your name is NUTTERX-AI. You are a capable general-purpose AI assistant. Be respectful, approachable, accurate, and solution-oriented.`;
 
-// Send one SSE message to the frontend
+// Send one SSE message to the frontend.
 function sendStreamEvent(res, data) {
   if (!res.writableEnded && !res.destroyed) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   }
 }
 
-// Generate streamed AI response
+// Generate streamed AI response.
 app.post(
   "/api/ai-chat",
   asyncRoute(async (req, res) => {
@@ -1495,6 +1680,14 @@ app.use((err, req, res, next) => {
 
 async function startLocalServer() {
   await connectToDatabase();
+
+  if (emailConfigured) {
+    console.log("Gmail notification configuration detected.");
+  } else {
+    console.warn(
+      "Gmail notifications are disabled. Configure EMAIL_USER and EMAIL_APP_PASSWORD in .env."
+    );
+  }
 
   app.listen(Number(PORT), () => {
     console.log(
