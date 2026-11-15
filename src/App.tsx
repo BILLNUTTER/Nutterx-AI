@@ -21,6 +21,7 @@ const SUGGESTIONS = [
 
 function ChatApp() {
   const { user, loading } = useAuth();
+
   const [authOpen, setAuthOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chats, setChats] = useState<Chat[]>([]);
@@ -30,6 +31,37 @@ function ChatApp() {
   const [loadingMessages, setLoadingMessages] = useState(false);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const appContainerRef = useRef<HTMLDivElement>(null);
+
+  // Keep the application fitted to the visible mobile viewport.
+  // This helps keep the header and message input visible when
+  // the mobile keyboard opens or closes.
+  useEffect(() => {
+    const app = appContainerRef.current;
+    if (!app) return;
+
+    const viewport = window.visualViewport;
+
+    const updateViewport = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      const top = viewport?.offsetTop ?? 0;
+
+      app.style.height = `${height}px`;
+      app.style.top = `${top}px`;
+    };
+
+    updateViewport();
+
+    window.addEventListener('resize', updateViewport);
+    viewport?.addEventListener('resize', updateViewport);
+    viewport?.addEventListener('scroll', updateViewport);
+
+    return () => {
+      window.removeEventListener('resize', updateViewport);
+      viewport?.removeEventListener('resize', updateViewport);
+      viewport?.removeEventListener('scroll', updateViewport);
+    };
+  }, []);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -37,6 +69,7 @@ function ChatApp() {
     }
   }, [loading, user]);
 
+  // Load the user's chats.
   useEffect(() => {
     if (!user) {
       setChats([]);
@@ -45,9 +78,14 @@ function ChatApp() {
       return;
     }
 
+    let cancelled = false;
+
     (async () => {
       try {
         const userChats = await api.listChats();
+
+        if (cancelled) return;
+
         setChats(userChats);
 
         if (userChats.length > 0 && !activeChatId) {
@@ -57,38 +95,57 @@ function ChatApp() {
         // Ignore chat loading errors.
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
+  // Load messages for the selected chat.
   useEffect(() => {
     if (!activeChatId || !user) {
       setMessages([]);
+      setLoadingMessages(false);
       return;
     }
+
+    let cancelled = false;
 
     setLoadingMessages(true);
 
     (async () => {
       try {
         const msgs = await api.listMessages(activeChatId);
-        setMessages(msgs);
+
+        if (!cancelled) {
+          setMessages(msgs);
+        }
       } catch {
-        setMessages([]);
+        if (!cancelled) {
+          setMessages([]);
+        }
       } finally {
-        setLoadingMessages(false);
+        if (!cancelled) {
+          setLoadingMessages(false);
+        }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeChatId, user]);
 
-  // Scroll messages only, without moving the header or input.
+  // Scroll only the conversation container.
   useEffect(() => {
     const container = messagesContainerRef.current;
 
-    if (container) {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: 'smooth',
-      });
-    }
+    if (!container) return;
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: 'smooth',
+    });
   }, [messages, typing]);
 
   const handleNewChat = useCallback(() => {
@@ -106,7 +163,7 @@ function ChatApp() {
     try {
       await api.deleteChat(chatId);
 
-      setChats((prev) => prev.filter((c) => c.id !== chatId));
+      setChats((prev) => prev.filter((chat) => chat.id !== chatId));
 
       if (activeChatId === chatId) {
         setActiveChatId(null);
@@ -125,6 +182,7 @@ function ChatApp() {
 
     let currentChatId = activeChatId;
 
+    // Create a new chat if necessary.
     if (!currentChatId) {
       const title = text.length > 40
         ? text.slice(0, 40) + '...'
@@ -141,10 +199,16 @@ function ChatApp() {
       }
     }
 
+    // Save the user's message.
     let userMessage: Message;
 
     try {
-      userMessage = await api.createMessage(currentChatId, 'user', text);
+      userMessage = await api.createMessage(
+        currentChatId,
+        'user',
+        text
+      );
+
       setMessages((prev) => [...prev, userMessage]);
     } catch {
       return;
@@ -154,6 +218,7 @@ function ChatApp() {
 
     try {
       const allMessages = [...messages, userMessage];
+
       const { reply, error } = await getAIResponse(allMessages);
 
       if (error || !reply) {
@@ -169,6 +234,7 @@ function ChatApp() {
         return;
       }
 
+      // Save the assistant's response.
       try {
         const aiMsg = await api.createMessage(
           currentChatId,
@@ -178,6 +244,7 @@ function ChatApp() {
 
         setMessages((prev) => [...prev, aiMsg]);
       } catch {
+        // Display the reply even if saving it fails.
         const fallbackMsg: Message = {
           id: 'ai-' + Date.now(),
           chat_id: currentChatId,
@@ -205,7 +272,11 @@ function ChatApp() {
   }
 
   return (
-    <div className="fixed inset-0 flex h-[100dvh] w-full min-h-0 bg-surface overflow-hidden overscroll-none">
+    <div
+      ref={appContainerRef}
+      className="fixed left-0 right-0 top-0 flex w-full min-h-0 bg-surface overflow-hidden overscroll-none"
+      style={{ height: '100dvh' }}
+    >
       {user && (
         <Sidebar
           chats={chats}
@@ -224,6 +295,7 @@ function ChatApp() {
         <header className="relative z-20 flex shrink-0 items-center gap-3 px-4 md:px-6 h-16 min-h-16 border-b border-white/10 bg-surface/95 backdrop-blur-md">
           {user && (
             <button
+              type="button"
               onClick={() => setSidebarOpen(true)}
               className="md:hidden text-white/60 hover:text-white transition-colors"
               aria-label="Open menu"
@@ -250,10 +322,11 @@ function ChatApp() {
           )}
         </header>
 
-        {/* Conversation area: the only scrolling section */}
+        {/* Only the conversation area scrolls */}
         <div
           ref={messagesContainerRef}
-          className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden scrollbar-thin overscroll-contain"
+          className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin"
+          style={{ WebkitOverflowScrolling: 'touch' }}
         >
           {!user ? (
             <WelcomeLanding onGetStarted={() => setAuthOpen(true)} />
@@ -276,7 +349,7 @@ function ChatApp() {
           )}
         </div>
 
-        {/* Fixed mobile-friendly typing area */}
+        {/* Fixed message input area */}
         {user && (
           <div
             className="relative z-30 shrink-0 w-full border-t border-white/10 bg-surface/95 backdrop-blur-md px-3 sm:px-4 md:px-6 pt-3 sm:pt-4"
@@ -285,13 +358,19 @@ function ChatApp() {
             }}
           >
             <div className="max-w-3xl mx-auto w-full min-w-0">
-              <ChatInput onSend={handleSend} disabled={typing} />
+              <ChatInput
+                onSend={handleSend}
+                disabled={typing}
+              />
             </div>
           </div>
         )}
       </main>
 
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
+      <AuthModal
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+      />
     </div>
   );
 }
@@ -319,6 +398,7 @@ function WelcomeLanding({ onGetStarted }: { onGetStarted: () => void }) {
         </p>
 
         <button
+          type="button"
           onClick={onGetStarted}
           className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-white font-medium hover:opacity-90 transition-opacity glow-purple"
         >
@@ -352,10 +432,19 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
   return (
     <div className="min-h-full flex flex-col items-center justify-center px-4 py-12">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center mb-6 glow-purple">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="white"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <rect width="18" height="10" x="3" y="11" rx="2" />
           <circle cx="12" cy="16" r="1" fill="white" />
-          <path d="M12 13V7a4 4 0 0-4-4 4 4 0 0-4 4v1" />
+          <path d="M12 13V7a4 4 0 0 0-4-4 4 4 0 0 0-4 4v1" />
           <path d="M12 13V7a4 4 0 0 1 4-4 4 4 0 0 1 4 4v1" />
         </svg>
       </div>
@@ -371,6 +460,7 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl">
         {SUGGESTIONS.map((suggestion) => (
           <button
+            type="button"
             key={suggestion.text}
             onClick={() => onSuggestion(suggestion.text)}
             className="flex items-center gap-3 p-4 rounded-xl bg-surface-lighter/50 border border-white/10 hover:border-primary-500/30 hover:bg-surface-lightest/50 text-left transition-all group"
