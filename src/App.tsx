@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Menu, Sparkles, Zap, Brain, Shield } from 'lucide-react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
@@ -27,7 +28,8 @@ function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [typing, setTyping] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -47,6 +49,7 @@ function ChatApp() {
       try {
         const userChats = await api.listChats();
         setChats(userChats);
+
         if (userChats.length > 0 && !activeChatId) {
           setActiveChatId(userChats[0].id);
         }
@@ -63,6 +66,7 @@ function ChatApp() {
     }
 
     setLoadingMessages(true);
+
     (async () => {
       try {
         const msgs = await api.listMessages(activeChatId);
@@ -70,12 +74,21 @@ function ChatApp() {
       } catch {
         setMessages([]);
       }
+
       setLoadingMessages(false);
     })();
   }, [activeChatId, user]);
 
+  // Scroll only the conversation container, never the whole page.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = messagesContainerRef.current;
+
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   }, [messages, typing]);
 
   const handleNewChat = useCallback(() => {
@@ -92,7 +105,9 @@ function ChatApp() {
   const handleDeleteChat = useCallback(async (chatId: string) => {
     try {
       await api.deleteChat(chatId);
+
       setChats((prev) => prev.filter((c) => c.id !== chatId));
+
       if (activeChatId === chatId) {
         setActiveChatId(null);
         setMessages([]);
@@ -111,10 +126,14 @@ function ChatApp() {
     let currentChatId = activeChatId;
 
     if (!currentChatId) {
-      const title = text.length > 40 ? text.slice(0, 40) + '...' : text;
+      const title = text.length > 40
+        ? text.slice(0, 40) + '...'
+        : text;
+
       try {
         const newChat = await api.createChat(title);
         currentChatId = newChat.id;
+
         setChats((prev) => [newChat, ...prev]);
         setActiveChatId(currentChatId);
       } catch {
@@ -123,6 +142,7 @@ function ChatApp() {
     }
 
     let userMessage: Message;
+
     try {
       userMessage = await api.createMessage(currentChatId, 'user', text);
       setMessages((prev) => [...prev, userMessage]);
@@ -131,8 +151,10 @@ function ChatApp() {
     }
 
     setTyping(true);
+
     const allMessages = [...messages, userMessage];
     const { reply, error } = await getAIResponse(allMessages);
+
     setTyping(false);
 
     if (error || !reply) {
@@ -143,15 +165,20 @@ function ChatApp() {
         content: `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`,
         created_at: new Date().toISOString(),
       };
+
       setMessages((prev) => [...prev, errorMsg]);
       return;
     }
 
     try {
-      const aiMsg = await api.createMessage(currentChatId, 'assistant', reply);
+      const aiMsg = await api.createMessage(
+        currentChatId,
+        'assistant',
+        reply
+      );
+
       setMessages((prev) => [...prev, aiMsg]);
     } catch {
-      // Message didn't save but we can still show it
       const fallbackMsg: Message = {
         id: 'ai-' + Date.now(),
         chat_id: currentChatId,
@@ -159,13 +186,14 @@ function ChatApp() {
         content: reply,
         created_at: new Date().toISOString(),
       };
+
       setMessages((prev) => [...prev, fallbackMsg]);
     }
   }, [user, activeChatId, messages]);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center">
+      <div className="h-screen h-[100dvh] bg-surface flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 animate-pulse glow-purple" />
           <p className="text-white/50 text-sm">Loading NUTTERX-AI...</p>
@@ -175,7 +203,7 @@ function ChatApp() {
   }
 
   return (
-    <div className="flex h-screen bg-surface overflow-hidden">
+    <div className="flex h-screen h-[100dvh] bg-surface overflow-hidden">
       {user && (
         <Sidebar
           chats={chats}
@@ -188,8 +216,10 @@ function ChatApp() {
         />
       )}
 
-      <main className="flex-1 flex flex-col min-w-0 relative bg-grid">
-        <header className="flex items-center gap-3 px-4 md:px-6 h-16 border-b border-white/10 bg-surface/80 backdrop-blur-md z-20">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative bg-grid">
+
+        {/* Fixed navigation header */}
+        <header className="flex flex-shrink-0 items-center gap-3 px-4 md:px-6 h-16 min-h-16 border-b border-white/10 bg-surface/80 backdrop-blur-md z-20">
           {user && (
             <button
               onClick={() => setSidebarOpen(true)}
@@ -199,6 +229,7 @@ function ChatApp() {
               <Menu size={22} />
             </button>
           )}
+
           <div className="flex-1 flex items-center gap-3">
             {user ? (
               <Logo size="sm" />
@@ -206,38 +237,47 @@ function ChatApp() {
               <Logo size="md" />
             )}
           </div>
+
           {user && (
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20">
               <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-              <span className="text-xs text-white/60 font-medium">Online</span>
+              <span className="text-xs text-white/60 font-medium">
+                Online
+              </span>
             </div>
           )}
         </header>
 
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
+        {/* Only this section scrolls */}
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin overscroll-contain"
+        >
           {!user ? (
             <WelcomeLanding onGetStarted={() => setAuthOpen(true)} />
           ) : messages.length === 0 && !typing && !loadingMessages ? (
             <WelcomeChat onSuggestion={handleSend} />
           ) : (
-            <div className="max-w-3xl mx-auto px-4 md:px-6 py-6 space-y-6">
+            <div className="max-w-3xl mx-auto w-full px-4 md:px-6 py-6 space-y-6">
               {loadingMessages && (
                 <div className="flex items-center justify-center py-8">
                   <div className="w-6 h-6 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
                 </div>
               )}
+
               {messages.map((msg) => (
                 <ChatMessage key={msg.id} message={msg} />
               ))}
+
               {typing && <TypingIndicator />}
-              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
 
+        {/* Fixed message input */}
         {user && (
-          <div className="border-t border-white/10 bg-surface/80 backdrop-blur-md px-4 md:px-6 py-4">
-            <div className="max-w-3xl mx-auto">
+          <div className="flex-shrink-0 border-t border-white/10 bg-surface/80 backdrop-blur-md px-4 md:px-6 py-4 z-10">
+            <div className="max-w-3xl mx-auto w-full">
               <ChatInput onSend={handleSend} disabled={typing} />
             </div>
           </div>
@@ -255,7 +295,9 @@ function WelcomeLanding({ onGetStarted }: { onGetStarted: () => void }) {
       <div className="max-w-2xl text-center">
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20 mb-8">
           <Sparkles size={14} className="text-primary-400" />
-          <span className="text-xs font-medium text-white/70">Powered by Advanced AI</span>
+          <span className="text-xs font-medium text-white/70">
+            Powered by Advanced AI
+          </span>
         </div>
 
         <h1 className="font-display text-4xl md:text-6xl font-bold mb-6 leading-tight">
@@ -287,7 +329,9 @@ function WelcomeLanding({ onGetStarted }: { onGetStarted: () => void }) {
               className="p-5 rounded-xl bg-surface-lighter/50 border border-white/5 text-left"
             >
               <feature.icon size={22} className="text-primary-400 mb-3" />
-              <h3 className="font-medium text-white text-sm mb-1">{feature.title}</h3>
+              <h3 className="font-medium text-white text-sm mb-1">
+                {feature.title}
+              </h3>
               <p className="text-xs text-white/40">{feature.desc}</p>
             </div>
           ))}
@@ -312,6 +356,7 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
       <h2 className="font-display text-2xl md:text-3xl font-bold mb-2">
         How can I help you today?
       </h2>
+
       <p className="text-white/40 text-sm mb-8 text-center max-w-md">
         Ask me anything, or try one of the suggestions below to get started.
       </p>
@@ -326,6 +371,7 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
             <div className="w-9 h-9 rounded-lg bg-primary-500/15 flex items-center justify-center flex-shrink-0 group-hover:bg-primary-500/25 transition-colors">
               <suggestion.icon size={18} className="text-primary-400" />
             </div>
+
             <span className="text-sm text-white/70 group-hover:text-white/90 transition-colors">
               {suggestion.text}
             </span>
