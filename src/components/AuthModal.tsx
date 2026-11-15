@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { X, Mail, Lock, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -10,6 +11,7 @@ interface AuthModalProps {
 
 export default function AuthModal({ open, onClose }: AuthModalProps) {
   const { signIn, signUp } = useAuth();
+
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,38 +23,59 @@ export default function AuthModal({ open, onClose }: AuthModalProps) {
       setError(null);
       setEmail('');
       setPassword('');
+      setMode('signin');
+      setLoading(false);
     }
   }, [open]);
 
   if (!open) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    if (loading) return;
+
     setError(null);
     setLoading(true);
 
-    const fn = mode === 'signin' ? signIn : signUp;
-    const { error } = await fn(email, password);
+    try {
+      const authFunction = mode === 'signin' ? signIn : signUp;
+      const result = await authFunction(email.trim(), password);
 
-    setLoading(false);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
 
-    if (error) {
-      setError(error);
-    } else {
       onClose();
+    } catch (err) {
+      console.error('Authentication error:', err);
+      setError('Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+      <button
+        type="button"
+        aria-label="Close authentication dialog"
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm cursor-default"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-md bg-surface-light border border-white/10 rounded-2xl p-8 animate-fade-in glow-purple">
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-title"
+        className="relative w-full max-w-md bg-surface-light border border-white/10 rounded-2xl p-8 animate-fade-in glow-purple"
+      >
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 text-white/40 hover:text-white transition-colors"
+          disabled={loading}
+          className="absolute top-4 right-4 text-white/40 hover:text-white transition-colors disabled:opacity-40"
           aria-label="Close"
         >
           <X size={20} />
@@ -62,9 +85,13 @@ export default function AuthModal({ open, onClose }: AuthModalProps) {
           <Logo size="lg" />
         </div>
 
-        <h2 className="text-xl font-semibold text-center mb-1">
+        <h2
+          id="auth-title"
+          className="text-xl font-semibold text-center mb-1"
+        >
           {mode === 'signin' ? 'Welcome back' : 'Create your account'}
         </h2>
+
         <p className="text-sm text-white/50 text-center mb-6">
           {mode === 'signin'
             ? 'Sign in to access your chat history'
@@ -73,38 +100,69 @@ export default function AuthModal({ open, onClose }: AuthModalProps) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-xs font-medium text-white/60 mb-1.5 block">Email</label>
+            <label
+              htmlFor="auth-email"
+              className="text-xs font-medium text-white/60 mb-1.5 block"
+            >
+              Email
+            </label>
+
             <div className="relative">
-              <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+              <Mail
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40"
+              />
+
               <input
+                id="auth-email"
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 placeholder="you@example.com"
-                className="w-full bg-surface-lighter border border-white/10 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-white/30 outline-none focus:border-primary-500/50 transition-colors"
+                disabled={loading}
+                className="w-full bg-surface-lighter border border-white/10 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-white/30 outline-none focus:border-primary-500/50 transition-colors disabled:opacity-50"
               />
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-white/60 mb-1.5 block">Password</label>
+            <label
+              htmlFor="auth-password"
+              className="text-xs font-medium text-white/60 mb-1.5 block"
+            >
+              Password
+            </label>
+
             <div className="relative">
-              <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+              <Lock
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40"
+              />
+
               <input
+                id="auth-password"
                 type="password"
+                autoComplete={
+                  mode === 'signin' ? 'current-password' : 'new-password'
+                }
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
                 placeholder="••••••••"
-                className="w-full bg-surface-lighter border border-white/10 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-white/30 outline-none focus:border-primary-500/50 transition-colors"
+                disabled={loading}
+                className="w-full bg-surface-lighter border border-white/10 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-white/30 outline-none focus:border-primary-500/50 transition-colors disabled:opacity-50"
               />
             </div>
           </div>
 
           {error && (
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">
+            <div
+              role="alert"
+              className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5"
+            >
               {error}
             </div>
           )}
@@ -114,19 +172,33 @@ export default function AuthModal({ open, onClose }: AuthModalProps) {
             disabled={loading}
             className="w-full bg-gradient-to-r from-primary-500 to-accent-500 text-white font-medium py-3 rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center justify-center gap-2 glow-purple"
           >
-            {loading && <Loader2 size={18} className="animate-spin" />}
-            {mode === 'signin' ? 'Sign In' : 'Sign Up'}
+            {loading && (
+              <Loader2 size={18} className="animate-spin" />
+            )}
+
+            {loading
+              ? 'Please wait...'
+              : mode === 'signin'
+                ? 'Sign In'
+                : 'Sign Up'}
           </button>
         </form>
 
         <p className="text-sm text-white/50 text-center mt-6">
-          {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
+          {mode === 'signin'
+            ? "Don't have an account? "
+            : 'Already have an account? '}
+
           <button
+            type="button"
+            disabled={loading}
             onClick={() => {
-              setMode(mode === 'signin' ? 'signup' : 'signin');
+              setMode((current) =>
+                current === 'signin' ? 'signup' : 'signin'
+              );
               setError(null);
             }}
-            className="text-primary-400 hover:text-primary-300 font-medium transition-colors"
+            className="text-primary-400 hover:text-primary-300 font-medium transition-colors disabled:opacity-50"
           >
             {mode === 'signin' ? 'Sign up' : 'Sign in'}
           </button>

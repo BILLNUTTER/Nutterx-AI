@@ -29,13 +29,12 @@ function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [typing, setTyping] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [deletingChatIds, setDeletingChatIds] = useState<string[]>([]);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const appContainerRef = useRef<HTMLDivElement>(null);
 
   // Keep the application fitted to the visible mobile viewport.
-  // This helps keep the header and message input visible when
-  // the mobile keyboard opens or closes.
   useEffect(() => {
     const app = appContainerRef.current;
     if (!app) return;
@@ -63,11 +62,8 @@ function ChatApp() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!loading && !user) {
-      setAuthOpen(true);
-    }
-  }, [loading, user]);
+  // Do not automatically open the sign-in modal for visitors.
+  // Visitors should see the public landing page first.
 
   // Load the user's chats.
   useEffect(() => {
@@ -75,6 +71,7 @@ function ChatApp() {
       setChats([]);
       setActiveChatId(null);
       setMessages([]);
+      setDeletingChatIds([]);
       return;
     }
 
@@ -88,11 +85,22 @@ function ChatApp() {
 
         setChats(userChats);
 
-        if (userChats.length > 0 && !activeChatId) {
-          setActiveChatId(userChats[0].id);
+        if (userChats.length > 0) {
+          setActiveChatId((currentId) => {
+            if (
+              currentId &&
+              userChats.some((chat) => chat.id === currentId)
+            ) {
+              return currentId;
+            }
+
+            return userChats[0].id;
+          });
         }
-      } catch {
-        // Ignore chat loading errors.
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Could not load chats:', error);
+        }
       }
     })();
 
@@ -120,8 +128,9 @@ function ChatApp() {
         if (!cancelled) {
           setMessages(msgs);
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
+          console.error('Could not load messages:', error);
           setMessages([]);
         }
       } finally {
@@ -159,20 +168,43 @@ function ChatApp() {
     setSidebarOpen(false);
   }, []);
 
+  // Delete a chat and report any errors instead of silently ignoring them.
   const handleDeleteChat = useCallback(async (chatId: string) => {
+    if (deletingChatIds.includes(chatId)) return;
+
+    const chat = chats.find((item) => item.id === chatId);
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${chat?.title ?? 'this chat'}"? This action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingChatIds((prev) => [...prev, chatId]);
+
     try {
       await api.deleteChat(chatId);
 
-      setChats((prev) => prev.filter((chat) => chat.id !== chatId));
+      setChats((prev) => prev.filter((item) => item.id !== chatId));
 
       if (activeChatId === chatId) {
         setActiveChatId(null);
         setMessages([]);
       }
-    } catch {
-      // Ignore deletion errors.
+    } catch (error) {
+      console.error('Delete chat failed:', error);
+
+      window.alert(
+        error instanceof Error
+          ? `Could not delete chat: ${error.message}`
+          : 'Could not delete chat. Please try again.'
+      );
+    } finally {
+      setDeletingChatIds((prev) =>
+        prev.filter((id) => id !== chatId)
+      );
     }
-  }, [activeChatId]);
+  }, [activeChatId, chats, deletingChatIds]);
 
   const handleSend = useCallback(async (text: string) => {
     if (!user) {
@@ -194,7 +226,9 @@ function ChatApp() {
 
         setChats((prev) => [newChat, ...prev]);
         setActiveChatId(currentChatId);
-      } catch {
+      } catch (error) {
+        console.error('Could not create chat:', error);
+        window.alert('Could not create a new chat. Please try again.');
         return;
       }
     }
@@ -210,7 +244,9 @@ function ChatApp() {
       );
 
       setMessages((prev) => [...prev, userMessage]);
-    } catch {
+    } catch (error) {
+      console.error('Could not save message:', error);
+      window.alert('Your message could not be saved. Please try again.');
       return;
     }
 
@@ -243,7 +279,9 @@ function ChatApp() {
         );
 
         setMessages((prev) => [...prev, aiMsg]);
-      } catch {
+      } catch (error) {
+        console.error('Could not save AI response:', error);
+
         // Display the reply even if saving it fails.
         const fallbackMsg: Message = {
           id: 'ai-' + Date.now(),
@@ -305,11 +343,7 @@ function ChatApp() {
           )}
 
           <div className="flex-1 flex items-center gap-3">
-            {user ? (
-              <Logo size="sm" />
-            ) : (
-              <Logo size="md" />
-            )}
+            <Logo size={user ? 'sm' : 'md'} />
           </div>
 
           {user && (
