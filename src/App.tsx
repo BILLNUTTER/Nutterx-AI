@@ -1,6 +1,16 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Menu, Sparkles, Zap, Brain, Shield } from 'lucide-react';
+import {
+  Menu,
+  Sparkles,
+  Zap,
+  Brain,
+  Shield,
+  Trash2,
+  X,
+  CheckCircle2,
+  AlertCircle,
+} from 'lucide-react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { getAIResponse } from '@/lib/ai';
@@ -19,6 +29,12 @@ const SUGGESTIONS = [
   { icon: Shield, text: 'How do I stay safe online?' },
 ];
 
+interface ToastMessage {
+  id: number;
+  message: string;
+  type: 'success' | 'error';
+}
+
 function ChatApp() {
   const { user, loading } = useAuth();
 
@@ -31,8 +47,39 @@ function ChatApp() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [deletingChatIds, setDeletingChatIds] = useState<string[]>([]);
 
+  const [pendingDeleteChat, setPendingDeleteChat] = useState<Chat | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const appContainerRef = useRef<HTMLDivElement>(null);
+  const toastIdRef = useRef(0);
+
+  // Display a temporary notification.
+  const showToast = useCallback(
+    (message: string, type: 'success' | 'error') => {
+      toastIdRef.current += 1;
+
+      setToast({
+        id: toastIdRef.current,
+        message,
+        type,
+      });
+    },
+    []
+  );
+
+  // Automatically dismiss notifications after four seconds.
+  useEffect(() => {
+    if (!toast) return;
+
+    const timeout = window.setTimeout(() => {
+      setToast((current) =>
+        current?.id === toast.id ? null : current
+      );
+    }, 4000);
+
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
 
   // Keep the application fitted to the visible mobile viewport.
   useEffect(() => {
@@ -158,19 +205,30 @@ function ChatApp() {
     setSidebarOpen(false);
   }, []);
 
-  // Delete a chat and its messages.
-  const handleDeleteChat = useCallback(async (chatId: string) => {
+  // Open the custom delete confirmation dialog.
+  const handleDeleteChat = useCallback(
+    (chatId: string) => {
+      if (deletingChatIds.includes(chatId)) return;
+
+      const chat = chats.find((item) => item.id === chatId);
+
+      if (chat) {
+        setPendingDeleteChat(chat);
+      }
+    },
+    [chats, deletingChatIds]
+  );
+
+  // Confirm and perform chat deletion.
+  const confirmDeleteChat = useCallback(async () => {
+    if (!pendingDeleteChat) return;
+
+    const chatId = pendingDeleteChat.id;
+
     if (deletingChatIds.includes(chatId)) return;
 
-    const chat = chats.find((item) => item.id === chatId);
-
-    const confirmed = window.confirm(
-      `Are you sure you want to delete "${chat?.title ?? 'this chat'}"? This action cannot be undone.`
-    );
-
-    if (!confirmed) return;
-
     setDeletingChatIds((prev) => [...prev, chatId]);
+    setPendingDeleteChat(null);
 
     try {
       await api.deleteChat(chatId);
@@ -181,20 +239,28 @@ function ChatApp() {
         setActiveChatId(null);
         setMessages([]);
       }
+
+      showToast('Chat deleted successfully.', 'success');
     } catch (error) {
       console.error('Delete chat failed:', error);
 
-      window.alert(
+      showToast(
         error instanceof Error
           ? `Could not delete chat: ${error.message}`
-          : 'Could not delete chat. Please try again.'
+          : 'Could not delete chat. Please try again.',
+        'error'
       );
     } finally {
       setDeletingChatIds((prev) =>
         prev.filter((id) => id !== chatId)
       );
     }
-  }, [activeChatId, chats, deletingChatIds]);
+  }, [
+    pendingDeleteChat,
+    deletingChatIds,
+    activeChatId,
+    showToast,
+  ]);
 
   // Send a message and stream the AI response.
   const handleSend = useCallback(async (text: string) => {
@@ -219,7 +285,7 @@ function ChatApp() {
         setActiveChatId(currentChatId);
       } catch (error) {
         console.error('Could not create chat:', error);
-        window.alert('Could not create a new chat. Please try again.');
+        showToast('Could not create a new chat. Please try again.', 'error');
         return;
       }
     }
@@ -237,7 +303,7 @@ function ChatApp() {
       setMessages((prev) => [...prev, userMessage]);
     } catch (error) {
       console.error('Could not save message:', error);
-      window.alert('Your message could not be saved. Please try again.');
+      showToast('Your message could not be saved. Please try again.', 'error');
       return;
     }
 
@@ -348,7 +414,7 @@ function ChatApp() {
     } finally {
       setTyping(false);
     }
-  }, [user, activeChatId, messages]);
+  }, [user, activeChatId, messages, showToast]);
 
   if (loading) {
     return (
@@ -430,7 +496,10 @@ function ChatApp() {
                 <ChatMessage key={msg.id} message={msg} />
               ))}
 
-              {typing && <TypingIndicator />}
+              {typing && !messages.some(
+                (message) =>
+                  message.id.startsWith('ai-') && message.content.length > 0
+              ) && <TypingIndicator />}
             </div>
           )}
         </div>
@@ -452,6 +521,108 @@ function ChatApp() {
           </div>
         )}
       </main>
+
+      {/* Custom delete confirmation dialog */}
+      {pendingDeleteChat && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setPendingDeleteChat(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            className="w-full max-w-sm rounded-2xl border border-white/10 bg-surface-light shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200"
+          >
+            <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-5">
+              <Trash2 size={22} className="text-red-400" />
+            </div>
+
+            <h2
+              id="delete-dialog-title"
+              className="text-lg font-semibold text-white mb-2"
+            >
+              Delete conversation?
+            </h2>
+
+            <p className="text-sm text-white/50 leading-relaxed mb-6">
+              Are you sure you want to delete{' '}
+              <span className="text-white/80 font-medium">
+                "{pendingDeleteChat.title}"
+              </span>
+              ? This action cannot be undone.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteChat(null)}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white transition-colors text-sm font-medium"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={confirmDeleteChat}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white transition-colors text-sm font-semibold"
+              >
+                <Trash2 size={15} />
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom toast notification */}
+      {toast && (
+        <div
+          key={toast.id}
+          role="status"
+          aria-live="polite"
+          className="fixed top-5 right-4 left-4 sm:left-auto sm:right-6 z-[120] sm:w-full sm:max-w-sm animate-in slide-in-from-top-3 fade-in duration-200"
+        >
+          <div
+            className={`flex items-center gap-3 rounded-xl border p-4 shadow-2xl backdrop-blur-xl ${
+              toast.type === 'success'
+                ? 'bg-surface-light/95 border-green-500/20'
+                : 'bg-surface-light/95 border-red-500/20'
+            }`}
+          >
+            <div
+              className={`shrink-0 ${
+                toast.type === 'success'
+                  ? 'text-green-400'
+                  : 'text-red-400'
+              }`}
+            >
+              {toast.type === 'success' ? (
+                <CheckCircle2 size={22} />
+              ) : (
+                <AlertCircle size={22} />
+              )}
+            </div>
+
+            <p className="flex-1 text-sm text-white/85">
+              {toast.message}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="shrink-0 p-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+              aria-label="Dismiss notification"
+            >
+              <X size={17} />
+            </button>
+          </div>
+        </div>
+      )}
 
       <AuthModal
         open={authOpen}
