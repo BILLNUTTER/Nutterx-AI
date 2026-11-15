@@ -16,6 +16,14 @@ const API_URL = (
   import.meta.env.VITE_API_URL || 'http://localhost:3000/api'
 ).replace(/\/+$/, '');
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('nutterx_token');
+
+  return token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+}
+
 export async function getAIResponse(
   messages: Message[],
   onChunk?: (chunk: string) => void
@@ -26,6 +34,7 @@ export async function getAIResponse(
       headers: {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
+        ...getAuthHeaders(),
       },
       body: JSON.stringify({
         messages: messages.map((message) => ({
@@ -62,7 +71,7 @@ export async function getAIResponse(
 
     const processEvent = (event: string) => {
       const dataLines = event
-        .split('\n')
+        .split(/\r?\n/)
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trim());
 

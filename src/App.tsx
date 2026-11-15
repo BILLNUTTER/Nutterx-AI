@@ -11,16 +11,19 @@ import {
   CheckCircle2,
   AlertCircle,
 } from 'lucide-react';
+
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { getAIResponse } from '@/lib/ai';
 import type { Chat, Message } from '@/types';
+
 import Logo from '@/components/Logo';
 import Sidebar from '@/components/Sidebar';
 import ChatMessage from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
 import TypingIndicator from '@/components/TypingIndicator';
 import AuthModal from '@/components/AuthModal';
+import MemoryKnowledgePanel from '@/components/MemoryKnowledgePanel';
 
 const SUGGESTIONS = [
   { icon: Sparkles, text: 'Explain quantum computing in simple terms' },
@@ -40,9 +43,12 @@ function ChatApp() {
 
   const [authOpen, setAuthOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+
   const [typing, setTyping] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [deletingChatIds, setDeletingChatIds] = useState<string[]>([]);
@@ -116,6 +122,7 @@ function ChatApp() {
       setActiveChatId(null);
       setMessages([]);
       setDeletingChatIds([]);
+      setMemoryPanelOpen(false);
       return;
     }
 
@@ -464,6 +471,21 @@ function ChatApp() {
             <Logo size={user ? 'sm' : 'md'} />
           </div>
 
+          {/* Memory and knowledge button */}
+          {user && (
+            <button
+              type="button"
+              onClick={() => setMemoryPanelOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-primary-500/20 bg-primary-500/10 text-primary-300 hover:bg-primary-500/20 transition-colors"
+              aria-label="Open memory and knowledge"
+            >
+              <Brain size={17} />
+              <span className="hidden sm:inline text-xs font-medium">
+                Memory
+              </span>
+            </button>
+          )}
+
           {user && (
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20">
               <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
@@ -624,6 +646,13 @@ function ChatApp() {
         </div>
       )}
 
+      {/* Memory and shared knowledge panel */}
+      <MemoryKnowledgePanel
+        open={memoryPanelOpen}
+        onClose={() => setMemoryPanelOpen(false)}
+      />
+
+      {/* Authentication modal */}
       <AuthModal
         open={authOpen}
         onClose={() => setAuthOpen(false)}
