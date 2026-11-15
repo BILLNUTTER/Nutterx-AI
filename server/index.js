@@ -13,39 +13,122 @@ import {
 
 dotenv.config();
 
+// ---------------- ENVIRONMENT ----------------
+
 const {
   MONGODB_URI,
   DB_NAME = "nutterxai",
   PORT = 3000,
   CLIENT_URL = "http://localhost:5173",
+  CLIENT_URLS = "",
   POLLINATIONS_API_URL = "https://text.pollinations.ai/openai",
   POLLINATIONS_MODEL = "openai",
 } = process.env;
 
 if (!MONGODB_URI) {
-  throw new Error("MONGODB_URI is missing from your .env file");
+  throw new Error("MONGODB_URI is missing from environment variables");
 }
 
+// ---------------- APP SETUP ----------------
+
 const app = express();
-const mongoClient = new MongoClient(MONGODB_URI);
+
+const mongoClient = new MongoClient(MONGODB_URI, {
+  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 10000,
+});
 
 let db;
+let dbConnectionPromise;
 
-app.use(cors({ origin: CLIENT_URL }));
-app.use(express.json({ limit: "1mb" }));
+// ---------------- CORS ----------------
 
-// Handle asynchronous route errors
-const asyncRoute = (handler) => (req, res, next) => {
-  Promise.resolve(handler(req, res, next)).catch(next);
+const allowedOrigins = [
+  CLIENT_URL,
+  ...CLIENT_URLS.split(",").map((url) => url.trim()),
+  "http://localhost:5173",
+  "http://localhost:5174",
+].filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow requests without an Origin header (such as server-to-server).
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Origin not allowed by CORS"));
+  },
 };
 
-// MongoDB collections
+app.use(cors(corsOptions));
+app.use(express.json({ limit: "1mb" }));
+
+// ---------------- DATABASE CONNECTION ----------------
+
 const users = () => db.collection("users");
 const sessions = () => db.collection("sessions");
 const chats = () => db.collection("chats");
 const messages = () => db.collection("messages");
 
-// Get authentication token
+export async function connectToDatabase() {
+  if (db) {
+    return db;
+  }
+
+  if (!dbConnectionPromise) {
+    dbConnectionPromise = (async () => {
+      await mongoClient.connect();
+
+      const database = mongoClient.db(DB_NAME);
+
+      await database.collection("users").createIndex(
+        { email: 1 },
+        { unique: true }
+      );
+
+      await database.collection("sessions").createIndex(
+        { token: 1 },
+        { unique: true }
+      );
+
+      await database.collection("sessions").createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 }
+      );
+
+      await database.collection("chats").createIndex({
+        userId: 1,
+        createdAt: -1,
+      });
+
+      await database.collection("messages").createIndex({
+        chatId: 1,
+        createdAt: 1,
+      });
+
+      db = database;
+
+      console.log(`Connected to MongoDB database: ${DB_NAME}`);
+
+      return db;
+    })().catch((error) => {
+      dbConnectionPromise = null;
+      throw error;
+    });
+  }
+
+  return dbConnectionPromise;
+}
+
+// ---------------- ASYNC ROUTE HANDLER ----------------
+
+const asyncRoute = (handler) => (req, res, next) => {
+  Promise.resolve(handler(req, res, next)).catch(next);
+};
+
+// ---------------- AUTHENTICATION HELPERS ----------------
+
 function getToken(req) {
   const authorization = req.headers.authorization || "";
 
@@ -56,7 +139,6 @@ function getToken(req) {
   return authorization || null;
 }
 
-// Find a valid session
 function sessionQuery(token) {
   return {
     token,
@@ -67,7 +149,6 @@ function sessionQuery(token) {
   };
 }
 
-// Create user session
 async function createSession(user) {
   const token = randomBytes(32).toString("hex");
 
@@ -82,18 +163,19 @@ async function createSession(user) {
   return token;
 }
 
-// Verify passwords and support old SHA-256 hashes
+// ---------------- PASSWORD VERIFICATION ----------------
+
 async function verifyPassword(password, storedHash) {
   if (typeof storedHash !== "string") {
     return false;
   }
 
-  // Verify bcrypt password
+  // Bcrypt passwords
   if (storedHash.startsWith("$2")) {
     return bcrypt.compare(password, storedHash);
   }
 
-  // Support old SHA-256 password hashes
+  // Legacy SHA-256 passwords
   const [salt, expectedHash] = storedHash.split(":");
 
   if (!salt || !expectedHash) {
@@ -113,7 +195,8 @@ async function verifyPassword(password, storedHash) {
   );
 }
 
-// Authentication middleware
+// ---------------- AUTH MIDDLEWARE ----------------
+
 const requireAuth = asyncRoute(async (req, res, next) => {
   const token = getToken(req);
 
@@ -132,6 +215,7 @@ const requireAuth = asyncRoute(async (req, res, next) => {
   }
 
   req.userSession = session;
+
   next();
 });
 
@@ -143,6 +227,13 @@ app.get("/", (req, res) => {
   });
 });
 
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    application: "NUTTERX-AI",
+  });
+});
+
 // ---------------- AUTHENTICATION ----------------
 
 // Sign up
@@ -150,6 +241,7 @@ app.post(
   "/api/auth/signup",
   asyncRoute(async (req, res) => {
     const body = req.body || {};
+
     const email = String(body.email || "").trim().toLowerCase();
     const password = body.password;
 
@@ -205,6 +297,7 @@ app.post(
   "/api/auth/signin",
   asyncRoute(async (req, res) => {
     const body = req.body || {};
+
     const email = String(body.email || "").trim().toLowerCase();
     const password = body.password;
 
@@ -222,7 +315,7 @@ app.post(
       });
     }
 
-    // Upgrade old SHA-256 hashes to bcrypt
+    // Upgrade legacy SHA-256 passwords to bcrypt
     if (!user.passwordHash.startsWith("$2")) {
       const passwordHash = await bcrypt.hash(password, 12);
 
@@ -340,7 +433,7 @@ app.post(
   })
 );
 
-// Delete chat and its messages
+// Delete chat and messages
 app.delete(
   "/api/chats/:id",
   requireAuth,
@@ -416,6 +509,7 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const body = req.body || {};
+
     const { chat_id, role, content } = body;
 
     if (
@@ -468,6 +562,7 @@ app.post(
   "/api/ai-chat",
   asyncRoute(async (req, res) => {
     const body = req.body || {};
+
     const incomingMessages = body.messages;
 
     if (!Array.isArray(incomingMessages)) {
@@ -562,38 +657,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ---------------- START SERVER ----------------
+// ---------------- LOCAL DEVELOPMENT ----------------
 
-async function startServer() {
-  await mongoClient.connect();
+// Vercel imports this app as a serverless function.
+// Local development still starts a normal Express server.
 
-  db = mongoClient.db(DB_NAME);
-
-  // Create database indexes
-  await users().createIndex(
-    { email: 1 },
-    { unique: true }
-  );
-
-  await sessions().createIndex(
-    { token: 1 },
-    { unique: true }
-  );
-
-  await sessions().createIndex(
-    { expiresAt: 1 },
-    { expireAfterSeconds: 0 }
-  );
-
-  await chats().createIndex({
-    userId: 1,
-    createdAt: -1,
-  });
-
-  await messages().createIndex({
-    chatId: 1,
-    createdAt: 1,
-  });
+async function startLocalServer() {
+  await connectToDatabase();
 
   app.listen(Number(PORT), () => {
     console.log(
@@ -606,11 +676,12 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
-  console.error(
-    "Could not start NUTTERX-AI backend:",
-    error
-  );
+if (process.env.VERCEL !== "1") {
+  startLocalServer().catch((error) => {
+    console.error("Could not start NUTTERX-AI backend:", error);
+    process.exit(1);
+  });
+}
 
-  process.exit(1);
-});
+// Export Express app for Vercel
+export { app };
