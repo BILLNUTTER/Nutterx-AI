@@ -54,7 +54,7 @@ function ChatApp() {
           setActiveChatId(userChats[0].id);
         }
       } catch {
-        // ignore
+        // Ignore chat loading errors.
       }
     })();
   }, [user]);
@@ -73,13 +73,13 @@ function ChatApp() {
         setMessages(msgs);
       } catch {
         setMessages([]);
+      } finally {
+        setLoadingMessages(false);
       }
-
-      setLoadingMessages(false);
     })();
   }, [activeChatId, user]);
 
-  // Scroll only the conversation container, never the whole page.
+  // Scroll messages only, without moving the header or input.
   useEffect(() => {
     const container = messagesContainerRef.current;
 
@@ -113,7 +113,7 @@ function ChatApp() {
         setMessages([]);
       }
     } catch {
-      // ignore
+      // Ignore deletion errors.
     }
   }, [activeChatId]);
 
@@ -152,48 +152,50 @@ function ChatApp() {
 
     setTyping(true);
 
-    const allMessages = [...messages, userMessage];
-    const { reply, error } = await getAIResponse(allMessages);
-
-    setTyping(false);
-
-    if (error || !reply) {
-      const errorMsg: Message = {
-        id: 'error-' + Date.now(),
-        chat_id: currentChatId,
-        role: 'assistant',
-        content: `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`,
-        created_at: new Date().toISOString(),
-      };
-
-      setMessages((prev) => [...prev, errorMsg]);
-      return;
-    }
-
     try {
-      const aiMsg = await api.createMessage(
-        currentChatId,
-        'assistant',
-        reply
-      );
+      const allMessages = [...messages, userMessage];
+      const { reply, error } = await getAIResponse(allMessages);
 
-      setMessages((prev) => [...prev, aiMsg]);
-    } catch {
-      const fallbackMsg: Message = {
-        id: 'ai-' + Date.now(),
-        chat_id: currentChatId,
-        role: 'assistant',
-        content: reply,
-        created_at: new Date().toISOString(),
-      };
+      if (error || !reply) {
+        const errorMsg: Message = {
+          id: 'error-' + Date.now(),
+          chat_id: currentChatId,
+          role: 'assistant',
+          content: `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`,
+          created_at: new Date().toISOString(),
+        };
 
-      setMessages((prev) => [...prev, fallbackMsg]);
+        setMessages((prev) => [...prev, errorMsg]);
+        return;
+      }
+
+      try {
+        const aiMsg = await api.createMessage(
+          currentChatId,
+          'assistant',
+          reply
+        );
+
+        setMessages((prev) => [...prev, aiMsg]);
+      } catch {
+        const fallbackMsg: Message = {
+          id: 'ai-' + Date.now(),
+          chat_id: currentChatId,
+          role: 'assistant',
+          content: reply,
+          created_at: new Date().toISOString(),
+        };
+
+        setMessages((prev) => [...prev, fallbackMsg]);
+      }
+    } finally {
+      setTyping(false);
     }
   }, [user, activeChatId, messages]);
 
   if (loading) {
     return (
-      <div className="h-screen h-[100dvh] bg-surface flex items-center justify-center">
+      <div className="fixed inset-0 h-[100dvh] bg-surface flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 animate-pulse glow-purple" />
           <p className="text-white/50 text-sm">Loading NUTTERX-AI...</p>
@@ -203,7 +205,7 @@ function ChatApp() {
   }
 
   return (
-    <div className="flex h-screen h-[100dvh] bg-surface overflow-hidden">
+    <div className="fixed inset-0 flex h-[100dvh] w-full min-h-0 bg-surface overflow-hidden overscroll-none">
       {user && (
         <Sidebar
           chats={chats}
@@ -216,10 +218,10 @@ function ChatApp() {
         />
       )}
 
-      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative bg-grid">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden relative bg-grid">
 
         {/* Fixed navigation header */}
-        <header className="flex flex-shrink-0 items-center gap-3 px-4 md:px-6 h-16 min-h-16 border-b border-white/10 bg-surface/80 backdrop-blur-md z-20">
+        <header className="relative z-20 flex shrink-0 items-center gap-3 px-4 md:px-6 h-16 min-h-16 border-b border-white/10 bg-surface/95 backdrop-blur-md">
           {user && (
             <button
               onClick={() => setSidebarOpen(true)}
@@ -248,10 +250,10 @@ function ChatApp() {
           )}
         </header>
 
-        {/* Only this section scrolls */}
+        {/* Conversation area: the only scrolling section */}
         <div
           ref={messagesContainerRef}
-          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin overscroll-contain"
+          className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden scrollbar-thin overscroll-contain"
         >
           {!user ? (
             <WelcomeLanding onGetStarted={() => setAuthOpen(true)} />
@@ -274,10 +276,15 @@ function ChatApp() {
           )}
         </div>
 
-        {/* Fixed message input */}
+        {/* Fixed mobile-friendly typing area */}
         {user && (
-          <div className="flex-shrink-0 border-t border-white/10 bg-surface/80 backdrop-blur-md px-4 md:px-6 py-4 z-10">
-            <div className="max-w-3xl mx-auto w-full">
+          <div
+            className="relative z-30 shrink-0 w-full border-t border-white/10 bg-surface/95 backdrop-blur-md px-3 sm:px-4 md:px-6 pt-3 sm:pt-4"
+            style={{
+              paddingBottom: 'max(12px, env(safe-area-inset-bottom))',
+            }}
+          >
+            <div className="max-w-3xl mx-auto w-full min-w-0">
               <ChatInput onSend={handleSend} disabled={typing} />
             </div>
           </div>
@@ -348,7 +355,7 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect width="18" height="10" x="3" y="11" rx="2" />
           <circle cx="12" cy="16" r="1" fill="white" />
-          <path d="M12 13V7a4 4 0 0 0-4-4 4 4 0 0 0-4 4v1" />
+          <path d="M12 13V7a4 4 0 0-4-4 4 4 0 0-4 4v1" />
           <path d="M12 13V7a4 4 0 0 1 4-4 4 4 0 0 1 4 4v1" />
         </svg>
       </div>
@@ -368,7 +375,7 @@ function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void })
             onClick={() => onSuggestion(suggestion.text)}
             className="flex items-center gap-3 p-4 rounded-xl bg-surface-lighter/50 border border-white/10 hover:border-primary-500/30 hover:bg-surface-lightest/50 text-left transition-all group"
           >
-            <div className="w-9 h-9 rounded-lg bg-primary-500/15 flex items-center justify-center flex-shrink-0 group-hover:bg-primary-500/25 transition-colors">
+            <div className="w-9 h-9 rounded-lg bg-primary-500/15 flex items-center justify-center shrink-0 group-hover:bg-primary-500/25 transition-colors">
               <suggestion.icon size={18} className="text-primary-400" />
             </div>
 
