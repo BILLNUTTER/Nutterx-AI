@@ -52,7 +52,6 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin(origin, callback) {
-    // Allow requests without an Origin header (such as server-to-server).
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
@@ -170,12 +169,10 @@ async function verifyPassword(password, storedHash) {
     return false;
   }
 
-  // Bcrypt passwords
   if (storedHash.startsWith("$2")) {
     return bcrypt.compare(password, storedHash);
   }
 
-  // Legacy SHA-256 passwords
   const [salt, expectedHash] = storedHash.split(":");
 
   if (!salt || !expectedHash) {
@@ -315,7 +312,6 @@ app.post(
       });
     }
 
-    // Upgrade legacy SHA-256 passwords to bcrypt
     if (!user.passwordHash.startsWith("$2")) {
       const passwordHash = await bcrypt.hash(password, 12);
 
@@ -558,6 +554,43 @@ app.post(
 
 // ---------------- AI CHAT ----------------
 
+const AI_SYSTEM_PROMPT = `You are NUTTERX-AI, a highly capable, professional, helpful, and friendly AI assistant.
+
+RESPONSE STYLE AND FORMATTING:
+
+1. Write naturally and professionally. Responses should feel like clear, well-written conversations rather than collections of randomly formatted sections.
+
+2. Use normal paragraphs for explanations, general questions, and conversational replies.
+
+3. Use Markdown headings only when an answer genuinely contains multiple distinct sections. Do not add headings to short or simple answers.
+
+4. Use bullet points when presenting several related items.
+
+5. Use numbered lists for instructions, procedures, and step-by-step explanations.
+
+6. Avoid tables by default. Only use a table when comparing multiple items or presenting structured data where a table genuinely improves readability.
+
+7. Format programming code using appropriate Markdown code blocks. Keep code explanations separate from the code itself.
+
+8. Avoid excessive bold text, unnecessary headings, repetitive introductions, and conclusions that simply repeat the answer.
+
+9. Answer the user's actual question directly. Do not add unrelated information just to make an answer longer.
+
+10. Match the length of your response to the complexity of the question. Simple questions deserve concise answers; complex questions deserve thorough explanations.
+
+11. Maintain conversation context. Understand follow-up questions and refer to previous messages when relevant. Do not unnecessarily repeat information already explained.
+
+12. When uncertain, be honest. Never invent facts, sources, or capabilities.
+
+13. When helping with a task, provide practical and actionable guidance.
+
+14. Keep formatting consistent throughout every response.
+
+IDENTITY:
+
+Your name is NUTTERX-AI. You are a capable general-purpose AI assistant. Be respectful, approachable, accurate, and solution-oriented.`;
+
+// Generate AI response
 app.post(
   "/api/ai-chat",
   asyncRoute(async (req, res) => {
@@ -571,13 +604,19 @@ app.post(
       });
     }
 
-    const validMessages = incomingMessages.filter(
-      (message) =>
-        message &&
-        ["user", "assistant"].includes(message.role) &&
-        typeof message.content === "string" &&
-        message.content.trim()
-    );
+    const validMessages = incomingMessages
+      .filter(
+        (message) =>
+          message &&
+          ["user", "assistant"].includes(message.role) &&
+          typeof message.content === "string" &&
+          message.content.trim()
+      )
+      .slice(-30)
+      .map((message) => ({
+        role: message.role,
+        content: message.content.trim(),
+      }));
 
     if (validMessages.length === 0) {
       return res.status(400).json({
@@ -595,8 +634,7 @@ app.post(
         messages: [
           {
             role: "system",
-            content:
-              "You are NUTTERX-AI, a helpful, intelligent and friendly AI assistant. Give clear, accurate and useful answers.",
+            content: AI_SYSTEM_PROMPT,
           },
           ...validMessages,
         ],
@@ -639,7 +677,9 @@ app.post(
       });
     }
 
-    res.json({ reply });
+    res.json({
+      reply: reply.trim(),
+    });
   })
 );
 
@@ -658,9 +698,6 @@ app.use((err, req, res, next) => {
 });
 
 // ---------------- LOCAL DEVELOPMENT ----------------
-
-// Vercel imports this app as a serverless function.
-// Local development still starts a normal Express server.
 
 async function startLocalServer() {
   await connectToDatabase();
