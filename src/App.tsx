@@ -1,0 +1,345 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Menu, Sparkles, Zap, Brain, Shield } from 'lucide-react';
+import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
+import { getAIResponse } from '@/lib/ai';
+import type { Chat, Message } from '@/types';
+import Logo from '@/components/Logo';
+import Sidebar from '@/components/Sidebar';
+import ChatMessage from '@/components/ChatMessage';
+import ChatInput from '@/components/ChatInput';
+import TypingIndicator from '@/components/TypingIndicator';
+import AuthModal from '@/components/AuthModal';
+
+const SUGGESTIONS = [
+  { icon: Sparkles, text: 'Explain quantum computing in simple terms' },
+  { icon: Brain, text: 'Help me write a creative story about space' },
+  { icon: Zap, text: 'What are the best productivity tips?' },
+  { icon: Shield, text: 'How do I stay safe online?' },
+];
+
+function ChatApp() {
+  const { user, loading } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [typing, setTyping] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!loading && !user) {
+      setAuthOpen(true);
+    }
+  }, [loading, user]);
+
+  useEffect(() => {
+    if (!user) {
+      setChats([]);
+      setActiveChatId(null);
+      setMessages([]);
+      return;
+    }
+
+    (async () => {
+      try {
+        const userChats = await api.listChats();
+        setChats(userChats);
+        if (userChats.length > 0 && !activeChatId) {
+          setActiveChatId(userChats[0].id);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeChatId || !user) {
+      setMessages([]);
+      return;
+    }
+
+    setLoadingMessages(true);
+    (async () => {
+      try {
+        const msgs = await api.listMessages(activeChatId);
+        setMessages(msgs);
+      } catch {
+        setMessages([]);
+      }
+      setLoadingMessages(false);
+    })();
+  }, [activeChatId, user]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, typing]);
+
+  const handleNewChat = useCallback(() => {
+    setActiveChatId(null);
+    setMessages([]);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleSelectChat = useCallback((chatId: string) => {
+    setActiveChatId(chatId);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleDeleteChat = useCallback(async (chatId: string) => {
+    try {
+      await api.deleteChat(chatId);
+      setChats((prev) => prev.filter((c) => c.id !== chatId));
+      if (activeChatId === chatId) {
+        setActiveChatId(null);
+        setMessages([]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [activeChatId]);
+
+  const handleSend = useCallback(async (text: string) => {
+    if (!user) {
+      setAuthOpen(true);
+      return;
+    }
+
+    let currentChatId = activeChatId;
+
+    if (!currentChatId) {
+      const title = text.length > 40 ? text.slice(0, 40) + '...' : text;
+      try {
+        const newChat = await api.createChat(title);
+        currentChatId = newChat.id;
+        setChats((prev) => [newChat, ...prev]);
+        setActiveChatId(currentChatId);
+      } catch {
+        return;
+      }
+    }
+
+    let userMessage: Message;
+    try {
+      userMessage = await api.createMessage(currentChatId, 'user', text);
+      setMessages((prev) => [...prev, userMessage]);
+    } catch {
+      return;
+    }
+
+    setTyping(true);
+    const allMessages = [...messages, userMessage];
+    const { reply, error } = await getAIResponse(allMessages);
+    setTyping(false);
+
+    if (error || !reply) {
+      const errorMsg: Message = {
+        id: 'error-' + Date.now(),
+        chat_id: currentChatId,
+        role: 'assistant',
+        content: `Sorry, I couldn't process that request. ${error ?? 'Please try again.'}`,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+      return;
+    }
+
+    try {
+      const aiMsg = await api.createMessage(currentChatId, 'assistant', reply);
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch {
+      // Message didn't save but we can still show it
+      const fallbackMsg: Message = {
+        id: 'ai-' + Date.now(),
+        chat_id: currentChatId,
+        role: 'assistant',
+        content: reply,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, fallbackMsg]);
+    }
+  }, [user, activeChatId, messages]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 animate-pulse glow-purple" />
+          <p className="text-white/50 text-sm">Loading NUTTERX-AI...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-surface overflow-hidden">
+      {user && (
+        <Sidebar
+          chats={chats}
+          activeChatId={activeChatId}
+          onSelectChat={handleSelectChat}
+          onNewChat={handleNewChat}
+          onDeleteChat={handleDeleteChat}
+          open={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <main className="flex-1 flex flex-col min-w-0 relative bg-grid">
+        <header className="flex items-center gap-3 px-4 md:px-6 h-16 border-b border-white/10 bg-surface/80 backdrop-blur-md z-20">
+          {user && (
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="md:hidden text-white/60 hover:text-white transition-colors"
+              aria-label="Open menu"
+            >
+              <Menu size={22} />
+            </button>
+          )}
+          <div className="flex-1 flex items-center gap-3">
+            {user ? (
+              <Logo size="sm" />
+            ) : (
+              <Logo size="md" />
+            )}
+          </div>
+          {user && (
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20">
+              <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-xs text-white/60 font-medium">Online</span>
+            </div>
+          )}
+        </header>
+
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          {!user ? (
+            <WelcomeLanding onGetStarted={() => setAuthOpen(true)} />
+          ) : messages.length === 0 && !typing && !loadingMessages ? (
+            <WelcomeChat onSuggestion={handleSend} />
+          ) : (
+            <div className="max-w-3xl mx-auto px-4 md:px-6 py-6 space-y-6">
+              {loadingMessages && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+                </div>
+              )}
+              {messages.map((msg) => (
+                <ChatMessage key={msg.id} message={msg} />
+              ))}
+              {typing && <TypingIndicator />}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+        </div>
+
+        {user && (
+          <div className="border-t border-white/10 bg-surface/80 backdrop-blur-md px-4 md:px-6 py-4">
+            <div className="max-w-3xl mx-auto">
+              <ChatInput onSend={handleSend} disabled={typing} />
+            </div>
+          </div>
+        )}
+      </main>
+
+      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
+    </div>
+  );
+}
+
+function WelcomeLanding({ onGetStarted }: { onGetStarted: () => void }) {
+  return (
+    <div className="min-h-full flex items-center justify-center px-4 py-12">
+      <div className="max-w-2xl text-center">
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20 mb-8">
+          <Sparkles size={14} className="text-primary-400" />
+          <span className="text-xs font-medium text-white/70">Powered by Advanced AI</span>
+        </div>
+
+        <h1 className="font-display text-4xl md:text-6xl font-bold mb-6 leading-tight">
+          Your Intelligent
+          <br />
+          <span className="text-gradient">AI Companion</span>
+        </h1>
+
+        <p className="text-lg text-white/50 mb-10 max-w-xl mx-auto leading-relaxed">
+          NUTTERX-AI helps you brainstorm, write, learn, and explore ideas with
+          lightning-fast, intelligent responses.
+        </p>
+
+        <button
+          onClick={onGetStarted}
+          className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-white font-medium hover:opacity-90 transition-opacity glow-purple"
+        >
+          Get Started Free
+        </button>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16">
+          {[
+            { icon: Zap, title: 'Lightning Fast', desc: 'Instant responses' },
+            { icon: Brain, title: 'Smart Answers', desc: 'Context-aware AI' },
+            { icon: Shield, title: 'Secure Chats', desc: 'Your data is private' },
+          ].map((feature) => (
+            <div
+              key={feature.title}
+              className="p-5 rounded-xl bg-surface-lighter/50 border border-white/5 text-left"
+            >
+              <feature.icon size={22} className="text-primary-400 mb-3" />
+              <h3 className="font-medium text-white text-sm mb-1">{feature.title}</h3>
+              <p className="text-xs text-white/40">{feature.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WelcomeChat({ onSuggestion }: { onSuggestion: (text: string) => void }) {
+  return (
+    <div className="min-h-full flex flex-col items-center justify-center px-4 py-12">
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center mb-6 glow-purple">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect width="18" height="10" x="3" y="11" rx="2" />
+          <circle cx="12" cy="16" r="1" fill="white" />
+          <path d="M12 13V7a4 4 0 0 0-4-4 4 4 0 0 0-4 4v1" />
+          <path d="M12 13V7a4 4 0 0 1 4-4 4 4 0 0 1 4 4v1" />
+        </svg>
+      </div>
+
+      <h2 className="font-display text-2xl md:text-3xl font-bold mb-2">
+        How can I help you today?
+      </h2>
+      <p className="text-white/40 text-sm mb-8 text-center max-w-md">
+        Ask me anything, or try one of the suggestions below to get started.
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl">
+        {SUGGESTIONS.map((suggestion) => (
+          <button
+            key={suggestion.text}
+            onClick={() => onSuggestion(suggestion.text)}
+            className="flex items-center gap-3 p-4 rounded-xl bg-surface-lighter/50 border border-white/10 hover:border-primary-500/30 hover:bg-surface-lightest/50 text-left transition-all group"
+          >
+            <div className="w-9 h-9 rounded-lg bg-primary-500/15 flex items-center justify-center flex-shrink-0 group-hover:bg-primary-500/25 transition-colors">
+              <suggestion.icon size={18} className="text-primary-400" />
+            </div>
+            <span className="text-sm text-white/70 group-hover:text-white/90 transition-colors">
+              {suggestion.text}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ChatApp />
+    </AuthProvider>
+  );
+}
