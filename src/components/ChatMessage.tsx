@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import type { Message } from '@/types';
 
 interface ChatMessageProps {
@@ -27,10 +28,10 @@ function CodeBlock({ language, code }: CodeBlockProps) {
   };
 
   return (
-    <div className="my-4 overflow-hidden rounded-xl border border-white/10 bg-[#0d0d18]">
+    <div className="my-4 w-full max-w-full overflow-hidden rounded-xl border border-white/10 bg-[#0d0d18]">
       <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2">
         <span className="text-xs font-medium uppercase tracking-wider text-white/50">
-          {language || 'code'}
+          {language || 'text'}
         </span>
 
         <button
@@ -53,7 +54,7 @@ function CodeBlock({ language, code }: CodeBlockProps) {
         </button>
       </div>
 
-      <pre className="overflow-x-auto p-4 text-sm leading-relaxed scrollbar-thin">
+      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-4 text-sm leading-relaxed scrollbar-thin">
         <code className="font-mono text-primary-200">{code}</code>
       </pre>
     </div>
@@ -63,7 +64,7 @@ function CodeBlock({ language, code }: CodeBlockProps) {
 function MarkdownContent({ content }: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkBreaks]}
       components={{
         h1: ({ children }) => (
           <h1 className="mb-4 mt-6 text-xl font-bold text-white first:mt-0">
@@ -90,7 +91,7 @@ function MarkdownContent({ content }: { content: string }) {
         ),
 
         p: ({ children }) => (
-          <p className="mb-3 leading-7 text-white/90 last:mb-0">
+          <p className="mb-3 whitespace-pre-wrap leading-7 text-white/90 last:mb-0">
             {children}
           </p>
         ),
@@ -141,13 +142,17 @@ function MarkdownContent({ content }: { content: string }) {
         ),
 
         code: ({ className, children, ...props }) => {
-          const languageMatch = /language-(\w+)/.exec(className || '');
+          const languageMatch = /language-([\w-]+)/.exec(className || '');
           const code = String(children).replace(/\n$/, '');
 
-          if (languageMatch) {
+          const isLongInlineCode =
+            !languageMatch &&
+            (code.length > 180 || code.includes('\n'));
+
+          if (languageMatch || isLongInlineCode) {
             return (
               <CodeBlock
-                language={languageMatch[1]}
+                language={languageMatch?.[1] || 'text'}
                 code={code}
               />
             );
@@ -166,7 +171,7 @@ function MarkdownContent({ content }: { content: string }) {
         pre: ({ children }) => <>{children}</>,
 
         table: ({ children }) => (
-          <div className="my-4 w-full overflow-x-auto rounded-xl border border-white/10">
+          <div className="my-4 w-full max-w-full overflow-x-auto rounded-xl border border-white/10">
             <table className="w-full border-collapse text-left text-sm">
               {children}
             </table>
@@ -241,15 +246,13 @@ export default function ChatMessage({ message }: ChatMessageProps) {
 
   return (
     <div className="flex animate-fade-in items-start gap-3">
-      <div className="flex-shrink-0">
-        <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white">
-          <img
-            src="/nutterx-brand-logo.png"
-            alt="NUTTERX-AI"
-            draggable={false}
-            className="h-full w-full object-contain p-0.5"
-          />
-        </div>
+      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white">
+        <img
+          src="/nutterx-brand-logo.png"
+          alt="NUTTERX-AI"
+          draggable={false}
+          className="h-full w-full object-contain p-0.5"
+        />
       </div>
 
       <div className="min-w-0 max-w-[85%] overflow-hidden rounded-2xl rounded-tl-sm border border-white/10 bg-surface-lighter/80 px-4 py-3 md:max-w-[75%]">

@@ -616,13 +616,8 @@ async function saveAutomaticallyLearnedFact(userId, fact) {
 
 // Shared learning is deliberately more restrictive than personal learning.
 //
-// The system only discovers possible reusable knowledge from messages that
-// look like general explanations, solutions, or technical instructions.
-//
-// These discoveries are saved as PENDING candidates.
-// They are never added to shared AI context until approved by a moderator.
-//
-// A message is not proof that a claim is correct.
+// Candidates are stored as pending and are not available to other users
+// until a moderator reviews and approves them.
 
 function createFingerprint(value) {
   const normalized = String(value || "")
@@ -649,7 +644,6 @@ function extractSharedKnowledgeCandidate(message) {
     return null;
   }
 
-  // Avoid sharing personal statements or conversation-specific material.
   const personalPatterns = [
     /\bmy name is\b/i,
     /\bi am called\b/i,
@@ -676,8 +670,6 @@ function extractSharedKnowledgeCandidate(message) {
     return null;
   }
 
-  // Only consider messages containing explicit reusable explanation or
-  // troubleshooting language.
   const reusablePatterns = [
     /\bthe solution is\b/i,
     /\bto fix this\b/i,
@@ -700,7 +692,6 @@ function extractSharedKnowledgeCandidate(message) {
     return null;
   }
 
-  // Reject messages that are mostly questions or uncertain speculation.
   if (
     (text.match(/\?/g) || []).length > 2 ||
     /\b(?:maybe|i guess|i think|i am not sure|i'm not sure|probably|possibly)\b/i.test(text)
@@ -708,7 +699,6 @@ function extractSharedKnowledgeCandidate(message) {
     return null;
   }
 
-  // Do not create candidates from extremely short or vague explanations.
   const words = text.split(/\s+/).filter(Boolean);
 
   if (words.length < 10) return null;
@@ -769,7 +759,6 @@ async function saveSharedKnowledgeCandidate(userId, userEmail, candidate) {
 
     console.log("A shared knowledge candidate was discovered.");
 
-    // Moderator notification is best-effort.
     void sendKnowledgeNotification(item, userEmail);
 
     return true;
@@ -783,8 +772,6 @@ async function saveSharedKnowledgeCandidate(userId, userEmail, candidate) {
   }
 }
 
-// Runs after a user message has been saved.
-// Learning errors must never prevent normal chat functionality.
 async function learnFromUserMessage(userId, userEmail, message) {
   if (!userId || typeof message !== "string") return;
 
@@ -1143,8 +1130,6 @@ app.post(
 
     await messages().insertOne(message);
 
-    // Automatically learn from authenticated user messages.
-    // The learning function catches its own errors.
     if (role === "user") {
       await learnFromUserMessage(
         req.userSession.userId,
@@ -1279,8 +1264,6 @@ app.delete(
 
 // ---------------- SHARED KNOWLEDGE ----------------
 
-// Manual shared knowledge submissions still require explicit public confirmation.
-
 app.post(
   "/api/knowledge",
   requireAuth,
@@ -1350,7 +1333,6 @@ app.post(
   })
 );
 
-// List the signed-in user's contributions.
 app.get(
   "/api/knowledge/mine",
   requireAuth,
@@ -1367,7 +1349,6 @@ app.get(
   })
 );
 
-// A signed-in user receives only their own submissions.
 app.get(
   "/api/knowledge",
   requireAuth,
@@ -1385,7 +1366,6 @@ app.get(
   })
 );
 
-// Moderator: list all contributions and automatically discovered candidates.
 app.get(
   "/api/knowledge/all",
   requireAuth,
@@ -1403,7 +1383,6 @@ app.get(
   })
 );
 
-// Moderator: pending manual and automatic candidates.
 app.get(
   "/api/knowledge/pending",
   requireAuth,
@@ -1421,8 +1400,6 @@ app.get(
   })
 );
 
-// Approve shared knowledge.
-// Only approved entries are available to the AI for all users.
 app.patch(
   "/api/knowledge/:id/approve",
   requireAuth,
@@ -1464,7 +1441,6 @@ app.patch(
   })
 );
 
-// Reject shared knowledge.
 app.patch(
   "/api/knowledge/:id/reject",
   requireAuth,
@@ -1506,9 +1482,6 @@ app.patch(
   })
 );
 
-// Delete knowledge.
-// Moderators can delete any entry.
-// Contributors can delete their own pending submissions.
 app.delete(
   "/api/knowledge/:id",
   requireAuth,
@@ -1581,7 +1554,6 @@ async function getAIKnowledge(userId, latestMessage) {
       .toArray();
   }
 
-  // Pending and rejected knowledge is NEVER retrieved here.
   const approvedItems = await sharedKnowledge()
     .find({
       status: "approved",
@@ -1687,6 +1659,8 @@ Use clean, readable Markdown.
 - When asked for a full file, provide the entire file.
 - Always put code inside properly labelled Markdown code fences.
 - Never replace code with descriptions or placeholders.
+- Do not put ordinary explanations inside code fences unless the user requests that.
+- If the user explicitly requests the entire response in a code block, use one suitable fenced block and put the complete requested content inside it.
 
 7. RECIPES AND COOKING
 - Suggest practical meals using the ingredients mentioned.
@@ -1720,10 +1694,110 @@ Use clean, readable Markdown.
 - Distinguish facts from assumptions.
 - Correct previous mistakes clearly.
 
-FINAL QUALITY CHECK:
-Ensure the answer is accurate, readable, properly formatted, relevant, and free of unnecessary repetition.
+12. ACADEMIC CONTENT AND UNIVERSITY EXAMINATIONS
 
-Your goal is to provide useful, natural, well-organized answers that are easy to read.`;
+Recognize requests for:
+- University sample examination papers.
+- Practice questions and revision questions.
+- Assignments and coursework.
+- Quizzes and tests.
+- Past-paper-style questions.
+- Model examination papers.
+- Study guides and topic-based exercises.
+- Marking schemes and worked solutions.
+
+When creating an academic question paper, do not simply produce a random list of unrelated questions.
+
+STRUCTURE:
+- Start with a clear academic title.
+- Identify the subject and topic.
+- Include a course level when specified, such as undergraduate, first year, second year, or postgraduate.
+- Include duration and total marks only when supplied by the user or when clearly presenting them as suggested sample-paper details.
+- Include concise examination instructions.
+- Organize questions into meaningful sections.
+- Give each question a clear number and descriptive topic where appropriate.
+- Divide complex questions into logically ordered parts (a), (b), (c), and so on.
+- Put each question on its own clearly separated block.
+- End a complete examination paper with an appropriate closing line.
+
+ACADEMIC QUALITY:
+- Match the requested university level.
+- Use correct terminology and notation.
+- Ensure questions are complete, understandable, and answerable.
+- Include all necessary matrices, vectors, equations, definitions, diagrams described in text, and other supplied data.
+- Do not refer to missing figures, tables, or information.
+- Avoid ambiguous wording.
+- Avoid repeating the same question in slightly different forms.
+- Make the questions assess meaningful learning outcomes rather than merely testing memorization.
+- Use a balanced mixture of theoretical reasoning, calculations, proofs, interpretation, and applications when appropriate to the subject.
+- Progress logically from foundational concepts to more demanding questions.
+- Make the difficulty appropriate to the stated academic level.
+- Do not make every question a simple calculation.
+- Do not make questions unnecessarily complicated just to appear advanced.
+
+MARK ALLOCATION:
+- Include marks for questions and sub-questions when producing a marked examination.
+- Ensure sub-question marks add up to the question total.
+- Ensure question totals add up to the stated paper total.
+- Do not invent inconsistent mark totals.
+- If the user does not specify a mark total, choose a sensible sample-paper total and clearly present it as a suggested format, or omit marks if they are not needed.
+
+SECTION DESIGN:
+- Use sections appropriate to the subject and paper length.
+- For example, a mathematics paper may include short conceptual questions, computational problems, and extended proofs or applications.
+- Do not force every subject into the same examination format.
+- Clearly state whether questions are compulsory or optional.
+- If optional questions are included, make the selection instructions unambiguous.
+
+MATHEMATICAL QUESTIONS:
+- Use correct mathematical notation.
+- Define variables and matrices before asking students to use them.
+- Check that the supplied data is sufficient to solve the question.
+- Avoid accidental contradictions and impossible conditions.
+- Include appropriate instructions such as "show all working" when useful.
+- Use LaTeX for mathematical expressions in normal Markdown responses.
+- If the user explicitly requests a plain-text code block, use readable ASCII mathematical notation instead of relying on rendered LaTeX.
+- Keep matrices, vectors, equations, and their labels aligned and readable in plain-text formats.
+
+SOLUTIONS AND MARKING SCHEMES:
+- Do not include answers in a question paper unless the user requests them.
+- If solutions are requested, place them in a separate clearly labelled section.
+- Show calculations step by step.
+- Explain the reasoning behind proofs and methods.
+- Give final answers clearly.
+- For marking schemes, allocate marks to meaningful working steps rather than only final answers.
+
+REQUESTED OUTPUT FORMAT:
+- Follow the user's requested format exactly whenever possible.
+- If the user asks for questions in code blocks, put the requested questions in properly fenced code blocks.
+- If the user asks for the entire examination paper in one code block, use one opening and one closing fence around the whole paper.
+- For plain-text examination papers, use aligned headings, consistent numbering, separators, indentation, and readable mathematical notation.
+- Do not mix unformatted fragments with a paper that was explicitly requested in a single code block.
+- Do not put Markdown table syntax inside a plain-text code block.
+- Do not use LaTeX delimiters such as \\[ and \\] inside a plain-text code block.
+
+13. EDUCATIONAL SUPPORT
+- Explain difficult concepts at the learner's level.
+- Use relevant examples.
+- Break lengthy calculations into understandable steps.
+- When a user asks for practice, provide exercises before giving solutions unless they request both.
+- Do not assume the student already understands advanced terminology.
+- Distinguish between a definition, an example, a theorem, a proof, and an application.
+
+FINAL QUALITY CHECK:
+Before sending an academic paper, check:
+- Is the title clear?
+- Is the academic level appropriate?
+- Are the instructions understandable?
+- Are the sections logically organized?
+- Are questions numbered consistently?
+- Are all sub-questions clearly labelled?
+- Are the questions complete and answerable?
+- Are the marks consistent?
+- Does the requested output format match the response?
+- Is the paper free from unnecessary repetition?
+
+Your goal is to provide useful, natural, accurate, and well-organized answers that are easy to read.`;
 
 // ---------------- STREAM HELPERS ----------------
 
@@ -1838,7 +1912,7 @@ app.post(
             ...validMessages,
           ],
           temperature: 0.7,
-          max_tokens: 1200,
+          max_tokens: 4000,
           stream: true,
         }),
       });
@@ -1884,7 +1958,6 @@ app.post(
     let fullReply = "";
 
     try {
-      // Handle a non-streaming JSON response.
       if (!contentType.includes("text/event-stream")) {
         const raw = await new Response(response.body).text();
 
@@ -1928,7 +2001,6 @@ app.post(
         return res.end();
       }
 
-      // Handle the provider's streaming response.
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
