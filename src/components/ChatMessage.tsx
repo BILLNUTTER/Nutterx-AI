@@ -1,6 +1,7 @@
-
 import { useState } from 'react';
 import { User, Copy, Check } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Message } from '@/types';
 
 interface ChatMessageProps {
@@ -26,16 +27,17 @@ function CodeBlock({ language, code }: CodeBlockProps) {
   };
 
   return (
-    <div className="my-3 rounded-xl overflow-hidden border border-white/10 bg-[#0d0d18]">
-      <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/10">
-        <span className="text-xs font-medium text-white/50 uppercase tracking-wider">
+    <div className="my-4 overflow-hidden rounded-xl border border-white/10 bg-[#0d0d18]">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2">
+        <span className="text-xs font-medium uppercase tracking-wider text-white/50">
           {language || 'code'}
         </span>
 
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white transition-colors"
+          aria-label="Copy code"
+          className="flex items-center gap-1.5 text-xs text-white/50 transition-colors hover:text-white"
         >
           {copied ? (
             <>
@@ -51,96 +53,168 @@ function CodeBlock({ language, code }: CodeBlockProps) {
         </button>
       </div>
 
-      <pre className="p-4 overflow-x-auto scrollbar-thin text-sm leading-relaxed">
+      <pre className="overflow-x-auto p-4 text-sm leading-relaxed scrollbar-thin">
         <code className="font-mono text-primary-200">{code}</code>
       </pre>
     </div>
   );
 }
 
-function formatContent(content: string) {
-  const segments: React.ReactNode[] = [];
-
-  const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
-
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    if (match.index > lastIndex) {
-      const textBefore = content.slice(lastIndex, match.index);
-
-      segments.push(
-        <TextSegment key={key++} text={textBefore} />
-      );
-    }
-
-    segments.push(
-      <CodeBlock
-        key={key++}
-        language={match[1]}
-        code={match[2].replace(/\n$/, '')}
-      />
-    );
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < content.length) {
-    segments.push(
-      <TextSegment
-        key={key++}
-        text={content.slice(lastIndex)}
-      />
-    );
-  }
-
-  return segments;
-}
-
-function TextSegment({ text }: { text: string }) {
-  const parts = text.split(
-  /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g
-);
-
+function MarkdownContent({ content }: { content: string }) {
   return (
-    <span className="whitespace-pre-wrap break-words">
-      {parts.map((part, i) => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          return (
-            <strong key={i} className="font-semibold text-white">
-              {part.slice(2, -2)}
-            </strong>
-          );
-        }
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h1: ({ children }) => (
+          <h1 className="mb-4 mt-6 text-xl font-bold text-white first:mt-0">
+            {children}
+          </h1>
+        ),
 
-        if (part.startsWith('`') && part.endsWith('`')) {
+        h2: ({ children }) => (
+          <h2 className="mb-3 mt-6 text-lg font-bold text-white first:mt-0">
+            {children}
+          </h2>
+        ),
+
+        h3: ({ children }) => (
+          <h3 className="mb-2 mt-5 text-base font-semibold text-white first:mt-0">
+            {children}
+          </h3>
+        ),
+
+        h4: ({ children }) => (
+          <h4 className="mb-2 mt-4 font-semibold text-white">
+            {children}
+          </h4>
+        ),
+
+        p: ({ children }) => (
+          <p className="mb-3 leading-7 text-white/90 last:mb-0">
+            {children}
+          </p>
+        ),
+
+        strong: ({ children }) => (
+          <strong className="font-semibold text-white">
+            {children}
+          </strong>
+        ),
+
+        em: ({ children }) => (
+          <em className="text-white/90">{children}</em>
+        ),
+
+        ul: ({ children }) => (
+          <ul className="mb-4 ml-5 list-disc space-y-2 text-white/90 marker:text-primary-400">
+            {children}
+          </ul>
+        ),
+
+        ol: ({ children }) => (
+          <ol className="mb-4 ml-5 list-decimal space-y-2 text-white/90 marker:font-semibold marker:text-primary-300">
+            {children}
+          </ol>
+        ),
+
+        li: ({ children }) => (
+          <li className="pl-1 leading-7">{children}</li>
+        ),
+
+        blockquote: ({ children }) => (
+          <blockquote className="my-4 border-l-4 border-primary-400/70 pl-4 text-white/70">
+            {children}
+          </blockquote>
+        ),
+
+        hr: () => <hr className="my-5 border-white/10" />,
+
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary-300 underline decoration-primary-300/40 underline-offset-4 transition-colors hover:text-primary-200"
+          >
+            {children}
+          </a>
+        ),
+
+        code: ({ className, children, ...props }) => {
+          const languageMatch = /language-(\w+)/.exec(className || '');
+          const code = String(children).replace(/\n$/, '');
+
+          if (languageMatch) {
+            return (
+              <CodeBlock
+                language={languageMatch[1]}
+                code={code}
+              />
+            );
+          }
+
           return (
             <code
-              key={i}
-              className="px-1.5 py-0.5 rounded bg-primary-500/15 text-primary-300 text-sm font-mono"
+              {...props}
+              className="rounded-md bg-primary-500/15 px-1.5 py-0.5 font-mono text-sm text-primary-300"
             >
-              {part.slice(1, -1)}
+              {children}
             </code>
           );
-        }
+        },
 
-        if (
-          part.startsWith('*') &&
-          part.endsWith('*') &&
-          part.length > 2
-        ) {
-          return (
-            <em key={i} className="text-white/90">
-              {part.slice(1, -1)}
-            </em>
-          );
-        }
+        pre: ({ children }) => <>{children}</>,
 
-        return <span key={i}>{part}</span>;
-      })}
-    </span>
+        table: ({ children }) => (
+          <div className="my-4 w-full overflow-x-auto rounded-xl border border-white/10">
+            <table className="w-full border-collapse text-left text-sm">
+              {children}
+            </table>
+          </div>
+        ),
+
+        thead: ({ children }) => (
+          <thead className="bg-white/10 text-white">
+            {children}
+          </thead>
+        ),
+
+        tbody: ({ children }) => (
+          <tbody className="divide-y divide-white/10">
+            {children}
+          </tbody>
+        ),
+
+        tr: ({ children }) => (
+          <tr className="border-b border-white/10 last:border-b-0">
+            {children}
+          </tr>
+        ),
+
+        th: ({ children }) => (
+          <th className="whitespace-nowrap px-4 py-3 font-semibold text-white">
+            {children}
+          </th>
+        ),
+
+        td: ({ children }) => (
+          <td className="min-w-[120px] px-4 py-3 align-top leading-6 text-white/80">
+            {children}
+          </td>
+        ),
+
+        img: ({ src, alt }) => (
+          <img
+            src={src}
+            alt={alt || 'Image'}
+            loading="lazy"
+            className="my-3 max-h-96 max-w-full rounded-xl object-contain"
+          />
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 
@@ -149,15 +223,15 @@ export default function ChatMessage({ message }: ChatMessageProps) {
 
   if (isUser) {
     return (
-      <div className="flex items-start gap-3 justify-end animate-fade-in">
-        <div className="bg-gradient-to-br from-primary-600 to-primary-500 text-white rounded-2xl rounded-tr-sm px-4 py-3 max-w-[80%] md:max-w-[70%] glow-purple">
-          <p className="text-sm md:text-base leading-relaxed whitespace-pre-wrap break-words">
+      <div className="flex animate-fade-in items-start justify-end gap-3">
+        <div className="max-w-[80%] rounded-2xl rounded-tr-sm bg-gradient-to-br from-primary-600 to-primary-500 px-4 py-3 text-white glow-purple md:max-w-[70%]">
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed md:text-base">
             {message.content}
           </p>
         </div>
 
         <div className="flex-shrink-0">
-          <div className="w-9 h-9 rounded-lg bg-surface-lightest border border-white/10 flex items-center justify-center">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-surface-lightest">
             <User size={18} className="text-white/70" />
           </div>
         </div>
@@ -166,21 +240,21 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   }
 
   return (
-    <div className="flex items-start gap-3 animate-fade-in">
+    <div className="flex animate-fade-in items-start gap-3">
       <div className="flex-shrink-0">
-        <div className="w-9 h-9 rounded-lg bg-white border border-white/10 flex items-center justify-center overflow-hidden">
+        <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white">
           <img
             src="/nutterx-brand-logo.png"
             alt="NUTTERX-AI"
             draggable={false}
-            className="w-full h-full object-contain p-0.5"
+            className="h-full w-full object-contain p-0.5"
           />
         </div>
       </div>
 
-      <div className="bg-surface-lighter/80 border border-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%] md:max-w-[70%]">
-        <div className="text-sm md:text-base leading-relaxed text-white/90">
-          {formatContent(message.content)}
+      <div className="min-w-0 max-w-[85%] overflow-hidden rounded-2xl rounded-tl-sm border border-white/10 bg-surface-lighter/80 px-4 py-3 md:max-w-[75%]">
+        <div className="break-words text-sm leading-relaxed text-white/90 md:text-base">
+          <MarkdownContent content={message.content} />
         </div>
       </div>
     </div>
