@@ -1,4 +1,3 @@
-
 import type { Message } from '@/types';
 
 interface AIResponse {
@@ -69,7 +68,7 @@ export async function getAIResponse(
     let fullReply = '';
     let streamCompleted = false;
 
-    const processEvent = (event: string) => {
+    const processEvent = (event: string): void => {
       const dataLines = event
         .split(/\r?\n/)
         .filter((line) => line.startsWith('data:'))
@@ -127,7 +126,7 @@ export async function getAIResponse(
     if (!fullReply.trim()) {
       return {
         reply: '',
-        error: 'No response received from AI',
+        error: 'No response received from AI.',
       };
     }
 
