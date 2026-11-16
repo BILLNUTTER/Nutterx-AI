@@ -25,6 +25,47 @@ import TypingIndicator from '@/components/TypingIndicator';
 import AuthModal from '@/components/AuthModal';
 import MemoryKnowledgePanel from '@/components/MemoryKnowledgePanel';
 
+// Create a short, readable sidebar title from the first user message.
+function createChatTitle(message: string): string {
+  let title = message
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[“”"'`]/g, '')
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Remove conversational openings so the title describes the topic.
+  const prefixes = [
+    /^(please\s+)?(can|could|would|will) you\s+/i,
+    /^(please\s+)?help me\s+(to\s+)?/i,
+    /^(please\s+)?(show|tell|give) me\s+/i,
+    /^(please\s+)?(explain|write|create|make|find|suggest)\s+/i,
+    /^(what are|what is|who is|where is|when is|why is)\s+/i,
+    /^(how do i|how can i|how does|how to)\s+/i,
+    /^(i want to|i need to|i would like to)\s+/i,
+  ];
+
+  for (const prefix of prefixes) {
+    title = title.replace(prefix, '');
+  }
+
+  title = title.replace(/^(the|a|an|some|me|i)\s+/i, '').trim();
+
+  const words = title.split(' ').filter(Boolean).slice(0, 6);
+
+  if (words.length === 0) {
+    return 'New Conversation';
+  }
+
+  const readableTitle = words
+    .join(' ')
+    .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+
+  return readableTitle.length > 42
+    ? `${readableTitle.slice(0, 39).trimEnd()}...`
+    : readableTitle;
+}
+
 const SUGGESTIONS = [
   { icon: Sparkles, text: 'Explain quantum computing in simple terms' },
   { icon: Brain, text: 'Help me write a creative story about space' },
@@ -280,9 +321,7 @@ function ChatApp() {
 
     // Create a database chat only when the first message is sent.
     if (!currentChatId) {
-      const title = text.length > 40
-        ? text.slice(0, 40) + '...'
-        : text;
+      const title = createChatTitle(text);
 
       try {
         const newChat = await api.createChat(title);
