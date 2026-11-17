@@ -5,34 +5,34 @@ import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
   AlertCircle,
+  BarChart3,
   BookOpen,
   Brain,
   Check,
   CheckCircle2,
   Clock,
+  Cpu,
   Database,
   Eye,
   EyeOff,
+  GraduationCap,
   LayoutDashboard,
   Loader2,
   LogIn,
   LogOut,
+  Mail,
+  MessageSquare,
   RefreshCw,
   Search,
+  Server,
   Shield,
   ShieldCheck,
   Trash2,
+  TrendingUp,
+  UserCheck,
   Users,
   X,
   XCircle,
-  MessageSquare,
-  Server,
-  Mail,
-  Cpu,
-  TrendingUp,
-  GraduationCap,
-  UserCheck,
-  BarChart3,
 } from 'lucide-react';
 
 import { api } from '@/lib/api';
@@ -56,7 +56,7 @@ interface AdminUser {
 interface ManagedUser {
   id: string;
   email: string;
-  status: 'active' | 'disabled' | string;
+  status: string;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -80,18 +80,9 @@ interface ConversationAnalytics {
     totalUsers: number;
     periodDays: number;
   };
-  dailyChats: Array<{
-    date: string;
-    count: number;
-  }>;
-  dailyMessages: Array<{
-    date: string;
-    count: number;
-  }>;
-  messageRoles: Array<{
-    role: string;
-    count: number;
-  }>;
+  dailyChats: Array<{ date: string; count: number }>;
+  dailyMessages: Array<{ date: string; count: number }>;
+  messageRoles: Array<{ role: string; count: number }>;
 }
 
 interface SystemHealth {
@@ -172,6 +163,51 @@ const EMPTY_LEARNING: LearningStatistics = {
   checkedAt: '',
 };
 
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || 'http://localhost:3000/api'
+).replace(/\/+$/, '');
+
+function getAdminToken(): string | null {
+  return localStorage.getItem('nutterx_admin_token');
+}
+
+/**
+ * Calls an administrator endpoint using the same admin token
+ * used by the existing API authentication system.
+ *
+ * These requests use the actual backend paths:
+ * /admin/system/health
+ * /admin/learning/stats
+ */
+async function adminGet<T>(endpoint: string): Promise<T> {
+  const token = getAdminToken();
+
+  if (!token) {
+    throw new Error('Your administrator session has expired. Please sign in again.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      data?.error ||
+      data?.message ||
+      `Request failed with status ${response.status}.`;
+
+    throw new Error(message);
+  }
+
+  return data as T;
+}
+
 function formatNumber(value: number | undefined): string {
   return Number(value || 0).toLocaleString();
 }
@@ -216,15 +252,28 @@ function formatDate(value: string | null | undefined): string {
 function serviceIsHealthy(value: string | undefined): boolean {
   const normalized = String(value || '').toLowerCase();
 
-  return (
-    normalized === 'ok' ||
-    normalized === 'healthy' ||
-    normalized === 'connected' ||
-    normalized === 'configured' ||
-    normalized === 'active' ||
-    normalized === 'available' ||
-    normalized === 'operational'
-  );
+  return [
+    'ok',
+    'healthy',
+    'connected',
+    'configured',
+    'active',
+    'available',
+    'operational',
+    'running',
+  ].includes(normalized);
+}
+
+function normalizeManagedUser(value: unknown): ManagedUser {
+  const item = (value || {}) as Record<string, unknown>;
+
+  return {
+    id: String(item.id || item._id || ''),
+    email: String(item.email || item.username || 'Unknown user'),
+    status: String(item.status || 'active'),
+    createdAt: item.createdAt ? String(item.createdAt) : null,
+    updatedAt: item.updatedAt ? String(item.updatedAt) : null,
+  };
 }
 
 export default function Admin() {
@@ -282,8 +331,8 @@ export default function Admin() {
       api.listAdminApprovedKnowledge(),
     ]);
 
-    setPending(pendingItems);
-    setApproved(approvedItems);
+    setPending(pendingItems || []);
+    setApproved(approvedItems || []);
   }, []);
 
   // ---------------- LOAD USERS ----------------
@@ -300,14 +349,15 @@ export default function Admin() {
 
       const result = response as unknown as UsersResponse;
 
-      setManagedUsers(result.users || []);
-      setUsersTotal(result.pagination?.total || 0);
+      const normalizedUsers = Array.isArray(result.users)
+        ? result.users.map(normalizeManagedUser)
+        : [];
+
+      setManagedUsers(normalizedUsers);
+      setUsersTotal(Number(result.pagination?.total || 0));
       setUsersTotalPages(
-        Math.max(1, result.pagination?.totalPages || 1)
+        Math.max(1, Number(result.pagination?.totalPages || 1))
       );
-    } catch (err) {
-      console.error('Could not load administrator users:', err);
-      throw err;
     } finally {
       setUsersLoading(false);
     }
@@ -319,14 +369,25 @@ export default function Admin() {
     setAnalyticsLoading(true);
 
     try {
-      const response = await api.getConversationAnalytics(
-        analyticsDays
-      );
+      const response = await api.getConversationAnalytics(analyticsDays);
 
-      setAnalytics(response as unknown as ConversationAnalytics);
-    } catch (err) {
-      console.error('Could not load conversation analytics:', err);
-      throw err;
+      const result = response as unknown as ConversationAnalytics;
+
+      setAnalytics({
+        summary: {
+          ...EMPTY_ANALYTICS.summary,
+          ...(result?.summary || {}),
+        },
+        dailyChats: Array.isArray(result?.dailyChats)
+          ? result.dailyChats
+          : [],
+        dailyMessages: Array.isArray(result?.dailyMessages)
+          ? result.dailyMessages
+          : [],
+        messageRoles: Array.isArray(result?.messageRoles)
+          ? result.messageRoles
+          : [],
+      });
     } finally {
       setAnalyticsLoading(false);
     }
@@ -338,12 +399,12 @@ export default function Admin() {
     setHealthLoading(true);
 
     try {
-      const response = await api.getAdminSystemHealth();
+      // This is the actual route defined in server/index.js.
+      const response = await adminGet<SystemHealth>(
+        '/admin/system/health'
+      );
 
-      setHealth(response as unknown as SystemHealth);
-    } catch (err) {
-      console.error('Could not load system health:', err);
-      throw err;
+      setHealth(response);
     } finally {
       setHealthLoading(false);
     }
@@ -355,18 +416,87 @@ export default function Admin() {
     setLearningLoading(true);
 
     try {
-      const response = await api.getLearningStatistics();
+      // This is the actual route defined in server/index.js.
+      const response = await adminGet<LearningStatistics>(
+        '/admin/learning/stats'
+      );
 
-      setLearning(response as unknown as LearningStatistics);
-    } catch (err) {
-      console.error('Could not load learning statistics:', err);
-      throw err;
+      setLearning({
+        personalLearning: {
+          ...EMPTY_LEARNING.personalLearning,
+          ...(response?.personalLearning || {}),
+          categories: Array.isArray(response?.personalLearning?.categories)
+            ? response.personalLearning.categories
+            : [],
+        },
+        sharedLearning: {
+          ...EMPTY_LEARNING.sharedLearning,
+          ...(response?.sharedLearning || {}),
+        },
+        checkedAt: response?.checkedAt || '',
+      });
     } finally {
       setLearningLoading(false);
     }
   }, []);
 
-  // ---------------- LOAD ADMIN DASHBOARD ----------------
+  // ---------------- LOAD ACTIVE SECTION DATA ----------------
+
+  const loadActiveSection = useCallback(async () => {
+    if (!authorized) return;
+
+    setError('');
+
+    try {
+      switch (activeSection) {
+        case 'overview':
+          await Promise.all([
+            loadKnowledge(),
+            loadAnalytics(),
+          ]);
+          break;
+
+        case 'pending':
+        case 'approved':
+          await loadKnowledge();
+          break;
+
+        case 'users':
+          await loadUsers();
+          break;
+
+        case 'analytics':
+          await loadAnalytics();
+          break;
+
+        case 'health':
+          await loadHealth();
+          break;
+
+        case 'learning':
+          await loadLearning();
+          break;
+      }
+    } catch (err) {
+      console.error('Admin section loading failed:', err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to load this administrator section.'
+      );
+    }
+  }, [
+    authorized,
+    activeSection,
+    loadKnowledge,
+    loadAnalytics,
+    loadUsers,
+    loadHealth,
+    loadLearning,
+  ]);
+
+  // ---------------- LOAD ADMIN SESSION ----------------
 
   const loadDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
@@ -391,82 +521,35 @@ export default function Admin() {
 
       setUser(currentUser);
       setAuthorized(true);
-
-      await loadKnowledge();
     } catch (err) {
+      console.error('Could not verify administrator session:', err);
+
       setAuthorized(false);
-
-      const message =
-        err instanceof Error
-          ? err.message
-          : 'Unable to load the admin dashboard.';
-
-      setError(message);
       setUser(null);
       setPending([]);
       setApproved([]);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to verify administrator access.'
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [loadKnowledge]);
+  }, []);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
 
-  // ---------------- LOAD ACTIVE SECTION ----------------
-
+  // Load data when the administrator opens a section.
   useEffect(() => {
     if (!authorized) return;
 
-    if (activeSection === 'users') {
-      void loadUsers().catch((err) => {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unable to load users.'
-        );
-      });
-    }
-
-    if (activeSection === 'analytics') {
-      void loadAnalytics().catch((err) => {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unable to load conversation analytics.'
-        );
-      });
-    }
-
-    if (activeSection === 'health') {
-      void loadHealth().catch((err) => {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unable to load system health.'
-        );
-      });
-    }
-
-    if (activeSection === 'learning') {
-      void loadLearning().catch((err) => {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Unable to load learning statistics.'
-        );
-      });
-    }
-  }, [
-    authorized,
-    activeSection,
-    loadUsers,
-    loadAnalytics,
-    loadHealth,
-    loadLearning,
-  ]);
+    void loadActiveSection();
+  }, [authorized, loadActiveSection]);
 
   // ---------------- ADMIN SIGN-IN ----------------
 
@@ -503,8 +586,10 @@ export default function Admin() {
       setUser(currentUser);
       setAuthorized(true);
       setPassword('');
+      setUsername(cleanUsername);
+      setActiveSection('overview');
 
-      await loadKnowledge();
+      setSuccess('Administrator signed in successfully.');
     } catch (err) {
       console.error('Administrator sign-in failed:', err);
 
@@ -954,6 +1039,7 @@ export default function Admin() {
                   onClick={() => {
                     setActiveSection(item.id);
                     setSearch('');
+                    setError('');
                   }}
                   className={`w-full flex items-center justify-between gap-3 px-3 py-3 rounded-xl text-sm transition ${
                     active
@@ -1036,7 +1122,13 @@ export default function Admin() {
 
             <button
               type="button"
-              onClick={() => void loadDashboard(true)}
+              onClick={() => {
+                void loadDashboard(true).then(() => {
+                  if (getAdminToken()) {
+                    void loadActiveSection();
+                  }
+                });
+              }}
               disabled={refreshing}
               className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition disabled:opacity-50"
               title="Refresh dashboard"
@@ -1069,6 +1161,7 @@ export default function Admin() {
                 onClick={() => {
                   setActiveSection(item.id);
                   setSearch('');
+                  setError('');
                 }}
                 className={`flex items-center gap-2 whitespace-nowrap px-3 py-2 rounded-lg text-xs ${
                   activeSection === item.id
@@ -1141,7 +1234,7 @@ export default function Admin() {
 
                 <StatCard
                   title="Pending approvals"
-                  value={pending.length}
+                  value={formatNumber(pending.length)}
                   icon={Clock}
                   color="text-amber-400"
                   description="Awaiting moderator review"
@@ -1341,9 +1434,7 @@ export default function Admin() {
                             </td>
 
                             <td className="px-5 py-4">
-                              <StatusBadge
-                                status={managedUser.status}
-                              />
+                              <StatusBadge status={managedUser.status} />
                             </td>
 
                             <td className="px-5 py-4 text-gray-400 whitespace-nowrap">
@@ -1555,7 +1646,7 @@ export default function Admin() {
                 <EmptyState
                   icon={Server}
                   title="Health information unavailable"
-                  description="The system health endpoint did not return information."
+                  description="The system health endpoint did not return information. Check the error message above."
                 />
               ) : (
                 <>
@@ -1583,33 +1674,37 @@ export default function Admin() {
                     <HealthCard
                       icon={Activity}
                       title="API"
-                      value={health.services.api}
+                      value={health.services?.api}
                     />
 
                     <HealthCard
                       icon={Database}
                       title="Database"
-                      value={health.services.database}
+                      value={health.services?.database}
                     />
 
                     <HealthCard
                       icon={Mail}
                       title="Email"
-                      value={health.services.email}
+                      value={health.services?.email}
                     />
 
                     <HealthCard
                       icon={Brain}
                       title="AI provider"
-                      value={health.services.aiProvider}
+                      value={health.services?.aiProvider}
                     />
 
                     <HealthCard
                       icon={ShieldCheck}
                       title="Admin authentication"
-                      value={health.services.administratorAuthentication}
+                      value={health.services?.administratorAuthentication}
                     />
                   </div>
+
+                  <p className="text-xs text-gray-500">
+                    The AI provider status reflects the backend's configuration check; it does not necessarily confirm that the external AI service is reachable.
+                  </p>
 
                   <section className="bg-[#12121c] border border-white/10 rounded-2xl p-5 md:p-6">
                     <h3 className="font-semibold mb-5">
@@ -1624,37 +1719,37 @@ export default function Admin() {
 
                       <InfoItem
                         label="Node version"
-                        value={health.server.nodeVersion}
+                        value={health.server?.nodeVersion}
                       />
 
                       <InfoItem
                         label="Platform"
-                        value={`${health.server.platform} · ${health.server.architecture}`}
+                        value={`${health.server?.platform || 'Unavailable'} · ${health.server?.architecture || 'Unavailable'}`}
                       />
 
                       <InfoItem
                         label="Uptime"
-                        value={formatDuration(health.server.uptimeSeconds)}
+                        value={formatDuration(health.server?.uptimeSeconds)}
                       />
 
                       <InfoItem
                         label="Memory used"
-                        value={formatBytes(health.server.memory.heapUsedBytes)}
+                        value={formatBytes(health.server?.memory?.heapUsedBytes)}
                       />
 
                       <InfoItem
                         label="Memory allocated"
-                        value={formatBytes(health.server.memory.heapTotalBytes)}
+                        value={formatBytes(health.server?.memory?.heapTotalBytes)}
                       />
 
                       <InfoItem
                         label="Resident memory"
-                        value={formatBytes(health.server.memory.rssBytes)}
+                        value={formatBytes(health.server?.memory?.rssBytes)}
                       />
 
                       <InfoItem
                         label="External memory"
-                        value={formatBytes(health.server.memory.externalBytes)}
+                        value={formatBytes(health.server?.memory?.externalBytes)}
                       />
                     </div>
                   </section>
@@ -1905,17 +2000,17 @@ function Notice({
   message: string;
   onDismiss: () => void;
 }) {
-  const success = type === 'success';
+  const isSuccess = type === 'success';
 
   return (
     <div
       className={`mb-6 flex items-start gap-3 p-4 rounded-xl border ${
-        success
+        isSuccess
           ? 'bg-green-500/10 border-green-500/20 text-green-300'
           : 'bg-red-500/10 border-red-500/20 text-red-300'
       }`}
     >
-      {success ? (
+      {isSuccess ? (
         <CheckCircle2 size={19} className="shrink-0 mt-0.5" />
       ) : (
         <AlertCircle size={19} className="shrink-0 mt-0.5" />
@@ -2089,7 +2184,7 @@ function HealthCard({
 }: {
   icon: LucideIcon;
   title: string;
-  value: string;
+  value: string | undefined;
 }) {
   return (
     <div className="bg-[#12121c] border border-white/10 rounded-2xl p-5">
@@ -2111,7 +2206,7 @@ function InfoItem({
   value,
 }: {
   label: string;
-  value: string;
+  value: string | undefined;
 }) {
   return (
     <div>
