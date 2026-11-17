@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Menu,
@@ -24,6 +23,7 @@ import ChatInput from '@/components/ChatInput';
 import TypingIndicator from '@/components/TypingIndicator';
 import AuthModal from '@/components/AuthModal';
 import MemoryKnowledgePanel from '@/components/MemoryKnowledgePanel';
+import Admin from '@/components/Admin';
 
 // Create a short, readable sidebar title from the first user message.
 function createChatTitle(message: string): string {
@@ -471,6 +471,15 @@ function ChatApp() {
         </div>
       </div>
     );
+  }
+
+  // Hidden admin entry point.
+  // The backend must independently enforce moderator permissions.
+  const isAdminRoute =
+    new URLSearchParams(window.location.search).get('admin') === 'nutterx';
+
+  if (isAdminRoute) {
+    return <Admin />;
   }
 
   return (

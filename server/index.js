@@ -23,21 +23,56 @@ const {
   CLIENT_URLS = "",
   POLLINATIONS_API_URL = "https://text.pollinations.ai/openai",
   POLLINATIONS_MODEL = "openai",
-  SHARED_KNOWLEDGE_MODERATOR_EMAILS = "",
   EMAIL_USER = "",
   EMAIL_APP_PASSWORD = "",
 } = process.env;
+
+const ADMIN_USERNAME = String(
+  process.env.admin_username || process.env.ADMIN_USERNAME || ""
+).trim();
+
+const ADMIN_PASSWORD =
+  process.env.admin_password || process.env.ADMIN_PASSWORD || "";
 
 if (!MONGODB_URI) {
   throw new Error("MONGODB_URI is missing from environment variables");
 }
 
-const moderatorEmails = new Set(
-  SHARED_KNOWLEDGE_MODERATOR_EMAILS
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean)
-);
+if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+  console.warn(
+    "Administrator login is not configured. Set admin_username and admin_password."
+  );
+}
+
+// ---------------- ADMIN CREDENTIAL HELPERS ----------------
+
+function safeStringCompare(first, second) {
+  const firstHash = createHash("sha256")
+    .update(String(first))
+    .digest();
+
+  const secondHash = createHash("sha256")
+    .update(String(second))
+    .digest();
+
+  return timingSafeEqual(firstHash, secondHash);
+}
+
+function verifyAdminCredentials(username, password) {
+  if (!ADMIN_USERNAME || !ADMIN_PASSWORD) return false;
+
+  const usernameMatches = safeStringCompare(
+    String(username || "").trim().toLowerCase(),
+    ADMIN_USERNAME.toLowerCase()
+  );
+
+  const passwordMatches = safeStringCompare(
+    String(password || ""),
+    ADMIN_PASSWORD
+  );
+
+  return usernameMatches && passwordMatches;
+}
 
 // ---------------- EMAIL CONFIGURATION ----------------
 
@@ -80,19 +115,13 @@ async function sendKnowledgeNotification(item, submitterEmail) {
     return false;
   }
 
-  const recipients = [...moderatorEmails];
-
-  if (recipients.length === 0) {
-    recipients.push(EMAIL_USER.trim().toLowerCase());
-  }
-
   try {
     await emailTransporter.sendMail({
       from: {
         name: "NUTTERX-AI",
         address: EMAIL_USER.trim(),
       },
-      to: recipients.join(", "),
+      to: EMAIL_USER.trim().toLowerCase(),
       subject: `Knowledge awaiting review: ${item.title}`,
       text: [
         "A shared knowledge candidate requires review.",
@@ -201,6 +230,11 @@ export async function connectToDatabase() {
         { unique: true }
       );
 
+      await database.collection("users").createIndex({
+        status: 1,
+        createdAt: -1,
+      });
+
       await database.collection("sessions").createIndex(
         { token: 1 },
         { unique: true }
@@ -219,6 +253,10 @@ export async function connectToDatabase() {
       await database.collection("messages").createIndex({
         chatId: 1,
         createdAt: 1,
+      });
+
+      await database.collection("messages").createIndex({
+        createdAt: -1,
       });
 
       await database.collection("user_memories").createIndex({
@@ -305,8 +343,25 @@ async function createSession(user) {
     token,
     userId: user._id,
     email: user.email,
+    isAdmin: false,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  });
+
+  return token;
+}
+
+async function createAdminSession() {
+  const token = randomBytes(32).toString("hex");
+
+  await sessions().insertOne({
+    token,
+    userId: null,
+    email: ADMIN_USERNAME,
+    username: ADMIN_USERNAME,
+    isAdmin: true,
+    createdAt: new Date(),
+    expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000),
   });
 
   return token;
@@ -317,7 +372,11 @@ async function getOptionalSession(req) {
 
   if (!token) return null;
 
-  return sessions().findOne(sessionQuery(token));
+  const session = await sessions().findOne(sessionQuery(token));
+
+  if (!session || session.isAdmin === true) return null;
+
+  return session;
 }
 
 // ---------------- PASSWORD VERIFICATION ----------------
@@ -357,29 +416,50 @@ const requireAuth = asyncRoute(async (req, res, next) => {
 
   const session = await sessions().findOne(sessionQuery(token));
 
-  if (!session) {
+  if (!session || session.isAdmin === true || !session.userId) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const account = await users().findOne(
+    { _id: session.userId },
+    { projection: { status: 1 } }
+  );
+
+  if (!account || account.status === "disabled") {
+    await sessions().deleteMany({ userId: session.userId });
+
+    return res.status(403).json({
+      error: "Your account is disabled",
+    });
   }
 
   req.userSession = session;
   next();
 });
 
-const requireModerator = asyncRoute(async (req, res, next) => {
-  const email = String(req.userSession?.email || "").toLowerCase();
+const requireAdmin = asyncRoute(async (req, res, next) => {
+  const token = getToken(req);
 
-  if (!moderatorEmails.has(email)) {
-    return res.status(403).json({
-      error: "Moderator access required",
+  if (!token) {
+    return res.status(401).json({
+      error: "Administrator authentication required",
     });
   }
 
+  const session = await sessions().findOne({
+    ...sessionQuery(token),
+    isAdmin: true,
+  });
+
+  if (!session) {
+    return res.status(401).json({
+      error: "Administrator session is invalid or expired",
+    });
+  }
+
+  req.adminSession = session;
   next();
 });
-
-function isModerator(email) {
-  return moderatorEmails.has(String(email || "").toLowerCase());
-}
 
 // ---------------- VALIDATION HELPERS ----------------
 
@@ -440,6 +520,35 @@ function moderatorKnowledgeResponse(item) {
   };
 }
 
+function safeUserResponse(user) {
+  return {
+    id: user._id,
+    email: user.email,
+    status: user.status || "active",
+    createdAt: user.createdAt || null,
+    updatedAt: user.updatedAt || null,
+  };
+}
+
+function getPagination(req, defaultLimit = 20, maximumLimit = 100) {
+  const pageValue = Number.parseInt(req.query.page, 10);
+  const limitValue = Number.parseInt(req.query.limit, 10);
+
+  const page = Number.isFinite(pageValue)
+    ? Math.max(1, pageValue)
+    : 1;
+
+  const limit = Number.isFinite(limitValue)
+    ? Math.min(maximumLimit, Math.max(1, limitValue))
+    : defaultLimit;
+
+  return {
+    page,
+    limit,
+    skip: (page - 1) * limit,
+  };
+}
+
 // ---------------- PRIVACY FILTERS ----------------
 
 function containsSensitiveInformation(value) {
@@ -483,9 +592,6 @@ function containsSensitiveInformation(value) {
 }
 
 // ---------------- PERSONAL LEARNING ----------------
-
-// Personal learning is automatic for authenticated users.
-// Only the current user's own memory collection is updated.
 
 function extractLearnableFacts(message) {
   if (typeof message !== "string") return [];
@@ -563,7 +669,11 @@ function extractLearnableFacts(message) {
 
     const content = `${prefixes[pattern.category]}: ${detail}.`;
 
-    if (!facts.some((fact) => fact.content.toLowerCase() === content.toLowerCase())) {
+    if (
+      !facts.some(
+        (fact) => fact.content.toLowerCase() === content.toLowerCase()
+      )
+    ) {
       facts.push({
         content,
         category: pattern.category,
@@ -613,11 +723,6 @@ async function saveAutomaticallyLearnedFact(userId, fact) {
 }
 
 // ---------------- SHARED LEARNING DISCOVERY ----------------
-
-// Shared learning is deliberately more restrictive than personal learning.
-//
-// Candidates are stored as pending and are not available to other users
-// until a moderator reviews and approves them.
 
 function createFingerprint(value) {
   const normalized = String(value || "")
@@ -763,9 +868,7 @@ async function saveSharedKnowledgeCandidate(userId, userEmail, candidate) {
 
     return true;
   } catch (error) {
-    if (error?.code === 11000) {
-      return false;
-    }
+    if (error?.code === 11000) return false;
 
     console.error("Could not save shared knowledge candidate:", error);
     return false;
@@ -802,7 +905,7 @@ async function learnFromUserMessage(userId, userEmail, message) {
   }
 }
 
-// ---------------- HEALTH CHECK ----------------
+// ---------------- PUBLIC HEALTH CHECK ----------------
 
 app.get("/", (req, res) => {
   res.json({
@@ -815,13 +918,468 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     application: "NUTTERX-AI",
     emailConfigured,
+    adminConfigured: Boolean(ADMIN_USERNAME && ADMIN_PASSWORD),
     automaticPersonalLearning: true,
     automaticSharedKnowledgeDiscovery: true,
     sharedKnowledgeRequiresApproval: true,
   });
 });
 
-// ---------------- AUTHENTICATION ----------------
+// ---------------- ADMIN AUTHENTICATION ----------------
+
+app.post(
+  "/api/admin/signin",
+  asyncRoute(async (req, res) => {
+    const body = req.body || {};
+    const username = body.username;
+    const password = body.password;
+
+    if (
+      typeof username !== "string" ||
+      typeof password !== "string" ||
+      !username.trim() ||
+      !password
+    ) {
+      return res.status(400).json({
+        error: "Administrator username and password are required",
+      });
+    }
+
+    if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+      return res.status(503).json({
+        error: "Administrator login is not configured on the server",
+      });
+    }
+
+    if (!verifyAdminCredentials(username, password)) {
+      return res.status(401).json({
+        error: "Invalid administrator username or password",
+      });
+    }
+
+    const token = await createAdminSession();
+
+    res.json({
+      token,
+      user: {
+        id: "admin",
+        username: ADMIN_USERNAME,
+        email: ADMIN_USERNAME,
+        role: "admin",
+      },
+    });
+  })
+);
+
+app.get(
+  "/api/admin/me",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    res.json({
+      user: {
+        id: "admin",
+        username: req.adminSession.username || ADMIN_USERNAME,
+        email: req.adminSession.email || ADMIN_USERNAME,
+        role: "admin",
+      },
+    });
+  })
+);
+
+app.post(
+  "/api/admin/signout",
+  asyncRoute(async (req, res) => {
+    const token = getToken(req);
+
+    if (token) {
+      await sessions().deleteOne({
+        token,
+        isAdmin: true,
+      });
+    }
+
+    res.json({ success: true });
+  })
+);
+
+// ---------------- ADMIN: USER MANAGEMENT ----------------
+
+// Returns account information only.
+// Password hashes, sessions, memories, and message contents are never returned.
+
+app.get(
+  "/api/admin/users",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const { page, limit, skip } = getPagination(req);
+
+    const search = cleanText(req.query.search, 200);
+
+    const filter = {};
+
+    if (search) {
+      filter.email = {
+        $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        $options: "i",
+      };
+    }
+
+    const [total, userList] = await Promise.all([
+      users().countDocuments(filter),
+      users()
+        .find(filter, {
+          projection: {
+            passwordHash: 0,
+          },
+        })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
+    ]);
+
+    res.json({
+      users: userList.map(safeUserResponse),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  })
+);
+
+// Account overview returns aggregate counts only.
+// It deliberately does not return private conversations or memory content.
+
+app.get(
+  "/api/admin/users/:id",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const user = await users().findOne(
+      { _id: req.params.id },
+      {
+        projection: {
+          passwordHash: 0,
+        },
+      }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
+      });
+    }
+
+    const [chatCount, messageCount, memoryCount, contributionCount] =
+      await Promise.all([
+        chats().countDocuments({ userId: user._id }),
+        messages().countDocuments({
+          chatId: {
+            $in: await chats()
+              .find(
+                { userId: user._id },
+                { projection: { _id: 1 } }
+              )
+              .map((chat) => chat._id)
+              .toArray(),
+          },
+        }),
+        userMemories().countDocuments({ userId: user._id }),
+        sharedKnowledge().countDocuments({ userId: user._id }),
+      ]);
+
+    res.json({
+      user: safeUserResponse(user),
+      statistics: {
+        chats: chatCount,
+        messages: messageCount,
+        personalMemories: memoryCount,
+        knowledgeContributions: contributionCount,
+      },
+    });
+  })
+);
+
+// Enable or disable a user account.
+// Disabled accounts cannot sign in or use authenticated endpoints.
+
+app.patch(
+  "/api/admin/users/:id/status",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const status = req.body?.status;
+
+    if (!["active", "disabled"].includes(status)) {
+      return res.status(400).json({
+        error: "Status must be either active or disabled",
+      });
+    }
+
+    const result = await users().findOneAndUpdate(
+      { _id: req.params.id },
+      {
+        $set: {
+          status,
+          updatedAt: new Date(),
+        },
+      },
+      {
+        returnDocument: "after",
+        projection: {
+          passwordHash: 0,
+        },
+      }
+    );
+
+    const user = updatedDocument(result);
+
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
+      });
+    }
+
+    if (status === "disabled") {
+      await sessions().deleteMany({
+        userId: user._id,
+        isAdmin: { $ne: true },
+      });
+    }
+
+    res.json({
+      success: true,
+      user: safeUserResponse(user),
+    });
+  })
+);
+
+// ---------------- ADMIN: CONVERSATION ANALYTICS ----------------
+
+// This endpoint returns aggregate analytics only.
+// It does not return chat titles, message contents, or private memory data.
+
+app.get(
+  "/api/admin/analytics/conversations",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const daysValue = Number.parseInt(req.query.days, 10);
+
+    const days = Number.isFinite(daysValue)
+      ? Math.min(90, Math.max(1, daysValue))
+      : 30;
+
+    const since = new Date(
+      Date.now() - days * 24 * 60 * 60 * 1000
+    );
+
+    const [
+      totalChats,
+      totalMessages,
+      recentChats,
+      recentMessages,
+      userCount,
+      dailyChats,
+      dailyMessages,
+      messageRoles,
+    ] = await Promise.all([
+      chats().countDocuments({}),
+      messages().countDocuments({}),
+      chats().countDocuments({ createdAt: { $gte: since } }),
+      messages().countDocuments({ createdAt: { $gte: since } }),
+      users().countDocuments({}),
+      chats()
+        .aggregate([
+          { $match: { createdAt: { $gte: since } } },
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: "%Y-%m-%d",
+                  date: "$createdAt",
+                },
+              },
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ])
+        .toArray(),
+      messages()
+        .aggregate([
+          { $match: { createdAt: { $gte: since } } },
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: "%Y-%m-%d",
+                  date: "$createdAt",
+                },
+              },
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ])
+        .toArray(),
+      messages()
+        .aggregate([
+          { $match: { createdAt: { $gte: since } } },
+          {
+            $group: {
+              _id: "$role",
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray(),
+    ]);
+
+    res.json({
+      summary: {
+        totalChats,
+        totalMessages,
+        recentChats,
+        recentMessages,
+        totalUsers: userCount,
+        periodDays: days,
+      },
+      dailyChats: dailyChats.map((item) => ({
+        date: item._id,
+        count: item.count,
+      })),
+      dailyMessages: dailyMessages.map((item) => ({
+        date: item._id,
+        count: item.count,
+      })),
+      messageRoles: messageRoles.map((item) => ({
+        role: item._id || "unknown",
+        count: item.count,
+      })),
+    });
+  })
+);
+
+// ---------------- ADMIN: SYSTEM HEALTH ----------------
+
+app.get(
+  "/api/admin/system/health",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    let databaseStatus = "disconnected";
+
+    try {
+      await db.command({ ping: 1 });
+      databaseStatus = "connected";
+    } catch (error) {
+      console.error("Admin health database ping failed:", error);
+    }
+
+    const memoryUsage = process.memoryUsage();
+
+    res.json({
+      application: "NUTTERX-AI",
+      status:
+        databaseStatus === "connected"
+          ? "operational"
+          : "degraded",
+      services: {
+        api: "operational",
+        database: databaseStatus,
+        email: emailConfigured ? "configured" : "not_configured",
+        aiProvider: POLLINATIONS_API_URL
+          ? "configured"
+          : "not_configured",
+        administratorAuthentication:
+          ADMIN_USERNAME && ADMIN_PASSWORD
+            ? "configured"
+            : "not_configured",
+      },
+      server: {
+        uptimeSeconds: Math.floor(process.uptime()),
+        nodeVersion: process.version,
+        platform: process.platform,
+        architecture: process.arch,
+        memory: {
+          rssBytes: memoryUsage.rss,
+          heapTotalBytes: memoryUsage.heapTotal,
+          heapUsedBytes: memoryUsage.heapUsed,
+          externalBytes: memoryUsage.external,
+        },
+      },
+      checkedAt: new Date().toISOString(),
+    });
+  })
+);
+
+// ---------------- ADMIN: GLOBAL LEARNING STATISTICS ----------------
+
+// Only counts and categories are returned.
+// Personal memory contents and individual user memory records are not exposed.
+
+app.get(
+  "/api/admin/learning/stats",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const [
+      totalPersonalMemories,
+      automaticPersonalMemories,
+      manualPersonalMemories,
+      memoryCategories,
+      totalSharedKnowledge,
+      pendingKnowledge,
+      approvedKnowledge,
+      rejectedKnowledge,
+      automaticallyDiscoveredKnowledge,
+      manuallySubmittedKnowledge,
+    ] = await Promise.all([
+      userMemories().countDocuments({}),
+      userMemories().countDocuments({ autoLearned: true }),
+      userMemories().countDocuments({ autoLearned: { $ne: true } }),
+      userMemories()
+        .aggregate([
+          {
+            $group: {
+              _id: { $ifNull: ["$category", "general"] },
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { count: -1 } },
+        ])
+        .toArray(),
+      sharedKnowledge().countDocuments({}),
+      sharedKnowledge().countDocuments({ status: "pending" }),
+      sharedKnowledge().countDocuments({ status: "approved" }),
+      sharedKnowledge().countDocuments({ status: "rejected" }),
+      sharedKnowledge().countDocuments({ autoDiscovered: true }),
+      sharedKnowledge().countDocuments({ autoDiscovered: { $ne: true } }),
+    ]);
+
+    res.json({
+      personalLearning: {
+        totalMemories: totalPersonalMemories,
+        automaticallyLearned: automaticPersonalMemories,
+        manuallyCreated: manualPersonalMemories,
+        categories: memoryCategories.map((item) => ({
+          category: item._id,
+          count: item.count,
+        })),
+      },
+      sharedLearning: {
+        totalContributions: totalSharedKnowledge,
+        pending: pendingKnowledge,
+        approved: approvedKnowledge,
+        rejected: rejectedKnowledge,
+        automaticallyDiscovered: automaticallyDiscoveredKnowledge,
+        manuallySubmitted: manuallySubmittedKnowledge,
+      },
+      checkedAt: new Date().toISOString(),
+    });
+  })
+);
+
+// ---------------- NORMAL USER AUTHENTICATION ----------------
 
 app.post(
   "/api/auth/signup",
@@ -860,6 +1418,7 @@ app.post(
       _id: randomUUID(),
       email,
       passwordHash: await bcrypt.hash(password, 12),
+      status: "active",
       createdAt: new Date(),
     };
 
@@ -902,13 +1461,25 @@ app.post(
 
     const user = await users().findOne({ email });
 
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    if (
+      !user ||
+      !(await verifyPassword(password, user.passwordHash))
+    ) {
       return res.status(401).json({
         error: "Invalid email or password",
       });
     }
 
-    if (!user.passwordHash.startsWith("$2")) {
+    if (user.status === "disabled") {
+      return res.status(403).json({
+        error: "Your account has been disabled",
+      });
+    }
+
+    if (
+      typeof user.passwordHash === "string" &&
+      !user.passwordHash.startsWith("$2")
+    ) {
       const passwordHash = await bcrypt.hash(password, 12);
 
       await users().updateOne(
@@ -935,7 +1506,10 @@ app.post(
     const token = getToken(req);
 
     if (token) {
-      await sessions().deleteOne({ token });
+      await sessions().deleteOne({
+        token,
+        isAdmin: { $ne: true },
+      });
     }
 
     res.json({ success: true });
@@ -951,9 +1525,21 @@ app.get(
       return res.json({ user: null });
     }
 
-    const session = await sessions().findOne(sessionQuery(token));
+    const session = await sessions().findOne({
+      ...sessionQuery(token),
+      isAdmin: { $ne: true },
+    });
 
     if (!session) {
+      return res.json({ user: null });
+    }
+
+    const user = await users().findOne(
+      { _id: session.userId },
+      { projection: { status: 1 } }
+    );
+
+    if (!user || user.status === "disabled") {
       return res.json({ user: null });
     }
 
@@ -1366,10 +1952,11 @@ app.get(
   })
 );
 
+// ---------------- ADMIN KNOWLEDGE MANAGEMENT ----------------
+
 app.get(
   "/api/knowledge/all",
-  requireAuth,
-  requireModerator,
+  requireAdmin,
   asyncRoute(async (req, res) => {
     const items = await sharedKnowledge()
       .find({})
@@ -1385,8 +1972,7 @@ app.get(
 
 app.get(
   "/api/knowledge/pending",
-  requireAuth,
-  requireModerator,
+  requireAdmin,
   asyncRoute(async (req, res) => {
     const pendingItems = await sharedKnowledge()
       .find({ status: "pending" })
@@ -1400,10 +1986,25 @@ app.get(
   })
 );
 
+app.get(
+  "/api/knowledge/approved",
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const approvedItems = await sharedKnowledge()
+      .find({ status: "approved" })
+      .sort({ approvedAt: -1 })
+      .limit(200)
+      .toArray();
+
+    res.json({
+      contributions: approvedItems.map(moderatorKnowledgeResponse),
+    });
+  })
+);
+
 app.patch(
   "/api/knowledge/:id/approve",
-  requireAuth,
-  requireModerator,
+  requireAdmin,
   asyncRoute(async (req, res) => {
     const now = new Date();
 
@@ -1417,7 +2018,7 @@ app.patch(
           status: "approved",
           verificationStatus: "moderator_approved",
           approvedAt: now,
-          approvedBy: req.userSession.email,
+          approvedBy: req.adminSession.username || ADMIN_USERNAME,
           rejectedAt: null,
           rejectedBy: null,
           updatedAt: now,
@@ -1443,8 +2044,7 @@ app.patch(
 
 app.patch(
   "/api/knowledge/:id/reject",
-  requireAuth,
-  requireModerator,
+  requireAdmin,
   asyncRoute(async (req, res) => {
     const now = new Date();
 
@@ -1458,7 +2058,7 @@ app.patch(
           status: "rejected",
           verificationStatus: "rejected",
           rejectedAt: now,
-          rejectedBy: req.userSession.email,
+          rejectedBy: req.adminSession.username || ADMIN_USERNAME,
           approvedAt: null,
           approvedBy: null,
           updatedAt: now,
@@ -1484,15 +2084,38 @@ app.patch(
 
 app.delete(
   "/api/knowledge/:id",
-  requireAuth,
   asyncRoute(async (req, res) => {
-    const filter = isModerator(req.userSession.email)
-      ? { _id: req.params.id }
-      : {
-          _id: req.params.id,
-          userId: req.userSession.userId,
-          status: "pending",
-        };
+    const token = getToken(req);
+
+    if (!token) {
+      return res.status(401).json({
+        error: "Authentication required",
+      });
+    }
+
+    const session = await sessions().findOne(sessionQuery(token));
+
+    if (!session) {
+      return res.status(401).json({
+        error: "Your session is invalid or expired",
+      });
+    }
+
+    let filter;
+
+    if (session.isAdmin === true) {
+      filter = { _id: req.params.id };
+    } else if (session.userId) {
+      filter = {
+        _id: req.params.id,
+        userId: session.userId,
+        status: "pending",
+      };
+    } else {
+      return res.status(403).json({
+        error: "You are not allowed to delete this contribution",
+      });
+    }
 
     const result = await sharedKnowledge().deleteOne(filter);
 
@@ -1859,6 +2482,19 @@ app.post(
       });
     }
 
+    if (currentSession) {
+      const account = await users().findOne(
+        { _id: currentSession.userId },
+        { projection: { status: 1 } }
+      );
+
+      if (!account || account.status === "disabled") {
+        return res.status(403).json({
+          error: "Your account has been disabled",
+        });
+      }
+    }
+
     const latestUserMessage = [...validMessages]
       .reverse()
       .find((message) => message.role === "user");
@@ -2132,6 +2768,12 @@ async function startLocalServer() {
     );
   }
 
+  if (ADMIN_USERNAME && ADMIN_PASSWORD) {
+    console.log("Administrator username/password authentication: enabled.");
+  } else {
+    console.warn("Administrator authentication: not configured.");
+  }
+
   app.listen(Number(PORT), () => {
     console.log(
       `NUTTERX-AI backend running on http://localhost:${PORT}`
@@ -2141,6 +2783,10 @@ async function startLocalServer() {
     console.log("Automatic personal learning: enabled");
     console.log("Automatic shared knowledge discovery: enabled");
     console.log("Shared knowledge approval required: enabled");
+    console.log("Administrator user management: enabled");
+    console.log("Administrator analytics: enabled");
+    console.log("Administrator system health: enabled");
+    console.log("Administrator learning statistics: enabled");
   });
 }
 
