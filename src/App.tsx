@@ -562,13 +562,25 @@ function ChatApp() {
                 </div>
               )}
 
-              {messages.map((msg) => (
-                <ChatMessage key={msg.id} message={msg} />
-              ))}
+              {/* Hide the empty temporary assistant message while typing. */}
+              {messages
+                .filter(
+                  (msg) =>
+                    !(
+                      typing &&
+                      msg.role === 'assistant' &&
+                      !msg.content.trim()
+                    )
+                )
+                .map((msg) => (
+                  <ChatMessage key={msg.id} message={msg} />
+                ))}
 
+              {/* Show one logo with typing dots until the first response chunk arrives. */}
               {typing && !messages.some(
                 (message) =>
-                  message.id.startsWith('ai-') && message.content.length > 0
+                  message.id.startsWith('ai-') &&
+                  message.content.trim().length > 0
               ) && <TypingIndicator />}
             </div>
           )}
