@@ -3,6 +3,9 @@ import { User, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import type { Components } from 'react-markdown';
 import type { Message } from '@/types';
 
@@ -245,7 +248,8 @@ function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="markdown-content min-w-0 max-w-full">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={markdownComponents}
         skipHtml
       >
